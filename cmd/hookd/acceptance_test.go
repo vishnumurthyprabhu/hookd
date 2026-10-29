@@ -206,6 +206,8 @@ func TestAcceptance(t *testing.T) {
 	useTempDB(t)
 	t.Setenv("HOOKD_POLL_INTERVAL", "50ms")
 	t.Setenv("HOOKD_LOG_LEVEL", "error")
+	// These are the steps of Hookd 1/6, where a failed delivery is final.
+	t.Setenv("HOOKD_RETRY_SCHEDULE", "none")
 
 	// 1. The operator creates an account and gets an API key.
 	runOK(t, "migrate")

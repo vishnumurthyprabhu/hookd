@@ -154,10 +154,11 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 	pool := delivery.NewPool(s, log, func() delivery.Config {
 		c := mgr.Current()
 		return delivery.Config{
-			Workers:      c.Workers,
-			PollInterval: c.PollInterval,
-			Timeout:      c.DeliveryTimeout,
-			Lease:        c.DeliveryLease,
+			Workers:       c.Workers,
+			PollInterval:  c.PollInterval,
+			Timeout:       c.DeliveryTimeout,
+			Lease:         c.DeliveryLease,
+			RetrySchedule: c.RetrySchedule,
 		}
 	})
 	workersCtx, stopWorkers := context.WithCancel(ctx)

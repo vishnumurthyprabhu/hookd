@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"sync"
@@ -41,10 +42,15 @@ type Config struct {
 	// (HOOKD_DELIVERY_LEASE). It should be longer than Timeout, or a slow
 	// delivery can be claimed and sent a second time.
 	Lease time.Duration
+	// RetrySchedule is the wait before each retry (HOOKD_RETRY_SCHEDULE):
+	// a delivery whose attempt n fails is retried RetrySchedule[n-1] later,
+	// with ±10% jitter. Empty means no retries.
+	RetrySchedule []time.Duration
 }
 
-// Pool is a set of workers that claim deliveries from the store, sign them,
-// send each once and record the outcome (R13–R18). Nothing is retried.
+// Pool is a set of workers that claim due deliveries from the store, sign
+// them, send them and record each attempt. A failed attempt is retried after
+// the next wait in Config.RetrySchedule, until the schedule runs out (R1–R8).
 type Pool struct {
 	store  store.Store
 	log    *slog.Logger
@@ -52,6 +58,8 @@ type Pool struct {
 	sender *Sender
 	wake   chan struct{}
 	now    func() time.Time
+	// random returns a number in [0, 1) that sets a retry's jitter.
+	random func() float64
 	// resizeEvery is how often Run checks Config.Workers.
 	resizeEvery time.Duration
 	// running counts the worker goroutines, including stopped ones still
@@ -62,7 +70,8 @@ type Pool struct {
 // NewPool returns a pool that works on st. Start it with Run. cfg is called
 // whenever the pool needs a setting, so a change applies without a restart:
 // the worker count within about a second, the poll interval at a worker's
-// next wait, and the timeout and lease at the next delivery.
+// next wait, the timeout and lease at the next delivery, and the retry
+// schedule at the next wait it sets.
 func NewPool(st store.Store, log *slog.Logger, cfg func() Config) *Pool {
 	return &Pool{
 		store:  st,
@@ -73,6 +82,7 @@ func NewPool(st store.Store, log *slog.Logger, cfg func() Config) *Pool {
 		// the queue is empty and wakes another for each delivery it takes.
 		wake:        make(chan struct{}, 1),
 		now:         time.Now,
+		random:      rand.Float64,
 		resizeEvery: resizeInterval,
 	}
 }
@@ -181,9 +191,11 @@ func (p *Pool) signal() {
 	}
 }
 
-// handle sends a claimed delivery and records the outcome. If the job cannot
-// be loaded or the outcome cannot be stored, the delivery stays in progress
-// and is claimed again once its lease expires.
+// handle makes one attempt at a claimed delivery and records it, with the time
+// of the next attempt if it failed and is to be retried. If the job cannot be
+// loaded or the attempt cannot be stored, the delivery stays in progress and
+// is claimed again once its lease expires, for an attempt with the same
+// number.
 func (p *Pool) handle(ctx context.Context, d store.ClaimedDelivery) {
 	log := p.log.With("delivery_id", d.ID, "event_id", d.EventID, "endpoint_id", d.EndpointID)
 	job, err := p.store.GetDeliveryJob(ctx, d.ID)
@@ -197,12 +209,16 @@ func (p *Pool) handle(ctx context.Context, d store.ClaimedDelivery) {
 	if job.EndpointDeleted || !job.Endpoint.Enabled {
 		r = store.AttemptResult{Outcome: store.AttemptFailed, Error: ErrEndpointDisabled}
 	} else {
+		// Each attempt is signed with its own timestamp.
 		r = p.send(ctx, job, started)
 	}
-	// No next attempt: the outcome is final, as nothing is retried yet.
+	finished := p.now()
 	r.Number = d.Attempts + 1
 	r.StartedAt = started
-	r.Latency = p.now().Sub(started)
+	r.Latency = finished.Sub(started)
+	if r.Outcome == store.AttemptFailed && r.Error != ErrEndpointDisabled {
+		r.NextAttemptAt = p.nextAttempt(r.Number, finished)
+	}
 
 	rctx, cancel := context.WithTimeout(ctx, recordTimeout)
 	defer cancel()
@@ -210,11 +226,29 @@ func (p *Pool) handle(ctx context.Context, d store.ClaimedDelivery) {
 		log.Error("record attempt", "attempt", r.Number, "err", err)
 		return
 	}
-	log.Info("delivery "+r.Outcome, "attempt", r.Number,
-		"response_status", r.ResponseStatus, "error", r.Error, "latency_ms", r.Latency.Milliseconds())
+	attrs := []any{"attempt", r.Number, "outcome", r.Outcome,
+		"response_status", r.ResponseStatus, "error", r.Error, "latency_ms", r.Latency.Milliseconds()}
+	if r.NextAttemptAt != nil {
+		attrs = append(attrs, "next_attempt_at", *r.NextAttemptAt)
+	}
+	log.Info("delivery attempt", attrs...)
 }
 
-// send signs the job's event and POSTs it once.
+// nextAttempt returns when a delivery whose attempt number failed at now is
+// tried again, or nil if the retry schedule has no wait left for it. The
+// schedule is read at this moment, so a changed schedule applies to the next
+// wait set. Each wait is multiplied by a random factor in [0.9, 1.1].
+func (p *Pool) nextAttempt(number int, now time.Time) *time.Time {
+	schedule := p.cfg().RetrySchedule
+	if number < 1 || number > len(schedule) {
+		return nil
+	}
+	r := 0.9 + 0.2*p.random()
+	next := now.Add(time.Duration(float64(schedule[number-1]) * r))
+	return &next
+}
+
+// send signs the job's event with timestamp ts and POSTs it once.
 func (p *Pool) send(ctx context.Context, job store.DeliveryJob, ts time.Time) store.AttemptResult {
 	header, err := signing.Sign(job.Secret, job.Event.ID, ts, job.Event.Payload)
 	if err != nil {

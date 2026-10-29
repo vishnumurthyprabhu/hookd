@@ -94,11 +94,15 @@ func (f *fixture) startPool(t *testing.T, cfg Config) func() {
 }
 
 // startLivePool is startPool with a configuration read from cfg. The pool
-// checks the worker count every 10ms.
-func (f *fixture) startLivePool(t *testing.T, cfg func() Config) (*Pool, func()) {
+// checks the worker count every 10ms. Each setup function can change the pool
+// before it starts.
+func (f *fixture) startLivePool(t *testing.T, cfg func() Config, setup ...func(*Pool)) (*Pool, func()) {
 	t.Helper()
 	p := NewPool(f.st, slog.New(slog.DiscardHandler), cfg)
 	p.resizeEvery = 10 * time.Millisecond
+	for _, s := range setup {
+		s(p)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -215,7 +219,8 @@ func TestDeliveryFailsOnOtherStatus(t *testing.T) {
 			if d.Error == "" {
 				t.Error("failed delivery has no error text")
 			}
-			// Not retried, and a redirect is not followed.
+			// With no retry schedule it is not retried, and a redirect is not
+			// followed.
 			time.Sleep(50 * time.Millisecond)
 			if n := len(got); n != 1 {
 				t.Errorf("receiver called %d times, want 1", n)
