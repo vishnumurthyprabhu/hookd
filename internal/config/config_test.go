@@ -146,6 +146,34 @@ func TestInvalidValuesReportedTogether(t *testing.T) {
 	}
 }
 
+func TestLeaseMustBeLongerThanTimeout(t *testing.T) {
+	for _, vars := range []map[string]string{
+		{"HOOKD_DELIVERY_LEASE": "10s"},
+		{"HOOKD_DELIVERY_LEASE": "15s"},
+		{"HOOKD_DELIVERY_TIMEOUT": "90s"},
+		{"HOOKD_DELIVERY_LEASE": "30s", "HOOKD_DELIVERY_TIMEOUT": "30s"},
+	} {
+		_, err := FromLookup(env(vars))
+		if err == nil {
+			t.Errorf("%v was accepted", vars)
+			continue
+		}
+		for _, want := range []string{"HOOKD_DELIVERY_LEASE", "HOOKD_DELIVERY_TIMEOUT", "longer than"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%v: error %q does not mention %q", vars, err, want)
+			}
+		}
+	}
+
+	c, err := FromLookup(env(map[string]string{"HOOKD_DELIVERY_LEASE": "31s", "HOOKD_DELIVERY_TIMEOUT": "30s"}))
+	if err != nil {
+		t.Fatalf("lease just over timeout rejected: %v", err)
+	}
+	if c.DeliveryLease != 31*time.Second || c.DeliveryTimeout != 30*time.Second {
+		t.Errorf("got lease=%v timeout=%v", c.DeliveryLease, c.DeliveryTimeout)
+	}
+}
+
 func TestLoadReadsProcessEnvironment(t *testing.T) {
 	t.Setenv("HOOKD_WORKERS", "3")
 	c, err := Load()

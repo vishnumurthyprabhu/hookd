@@ -111,6 +111,13 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 	p.oneOf("HOOKD_LOG_LEVEL", &c.LogLevel, "debug", "info", "warn", "error")
 	p.oneOf("HOOKD_LOG_FORMAT", &c.LogFormat, LogFormatText, LogFormatJSON)
 
+	// A lease that runs out while a delivery is still being sent lets another
+	// worker claim it and send it a second time.
+	if c.DeliveryLease <= c.DeliveryTimeout {
+		p.errs = append(p.errs, fmt.Errorf("  HOOKD_DELIVERY_LEASE=%q: must be longer than HOOKD_DELIVERY_TIMEOUT=%q",
+			c.DeliveryLease, c.DeliveryTimeout))
+	}
+
 	if len(p.errs) > 0 {
 		return Config{}, fmt.Errorf("invalid configuration:\n%w", errors.Join(p.errs...))
 	}

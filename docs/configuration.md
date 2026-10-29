@@ -28,7 +28,7 @@ The settings apply to every command (`serve`, `migrate`, `account create`), so `
 | `HOOKD_WORKERS` | Number of delivery workers, so the most deliveries one process sends at once. | `8` |
 | `HOOKD_POLL_INTERVAL` | How often idle workers look for work. New events wake the workers at once; polling picks up work left after a restart or by another instance. | `1s` |
 | `HOOKD_DELIVERY_TIMEOUT` | How long an endpoint has to answer one delivery. A slower answer counts as a failure. | `15s` |
-| `HOOKD_DELIVERY_LEASE` | How long a claimed delivery stays locked to its worker. If the process dies while sending, another worker sends the delivery again once the lease has run out. Keep it longer than `HOOKD_DELIVERY_TIMEOUT`. | `60s` |
+| `HOOKD_DELIVERY_LEASE` | How long a claimed delivery stays locked to its worker. If the process dies while sending, another worker sends the delivery again once the lease has run out. Must be longer than `HOOKD_DELIVERY_TIMEOUT`; Hookd refuses to start otherwise. | `60s` |
 | `HOOKD_MAX_PAYLOAD_BYTES` | Largest event payload accepted, in bytes. Larger events are rejected with 413. | `262144` (256 KB) |
 | `HOOKD_IDEMPOTENCY_WINDOW` | How long an `Idempotency-Key` is remembered. Sending the same key again within this time returns the original event. | `24h` |
 | `HOOKD_AUTO_MIGRATE` | Apply database migrations when `serve` starts: `true` or `false`. | `true` |
