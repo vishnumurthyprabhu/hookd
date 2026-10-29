@@ -249,13 +249,12 @@ func (s *Server) endpointError(w http.ResponseWriter, r *http.Request, op string
 // rejecting unknown fields. On failure it returns the status, code and
 // message of the error to answer with.
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) (status int, code, msg string) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxEndpointBodyBytes))
+	body, tooLarge, err := readBody(w, r, maxEndpointBodyBytes)
+	if tooLarge {
+		return http.StatusRequestEntityTooLarge, CodePayloadTooLarge,
+			fmt.Sprintf("request body is larger than %d bytes", maxEndpointBodyBytes)
+	}
 	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			return http.StatusRequestEntityTooLarge, CodePayloadTooLarge,
-				fmt.Sprintf("request body is larger than %d bytes", maxEndpointBodyBytes)
-		}
 		return http.StatusBadRequest, CodeInvalidRequest, "could not read the request body"
 	}
 

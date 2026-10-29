@@ -1,14 +1,17 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -281,5 +284,59 @@ func TestServeReturnsListenerError(t *testing.T) {
 	ln.Close()
 	if err := ts.srv.Serve(context.Background(), ln); err == nil || errors.Is(err, http.ErrServerClosed) {
 		t.Errorf("Serve on a closed listener = %v, want an error", err)
+	}
+}
+
+// TestOversizedBodyOverTCP sends bodies far over the limit on a real
+// connection, the way nginx does: the whole body is written before the
+// response is read. The rest of the body is drained, so the 413 always
+// arrives (no RST from closing with unread data) and the connection stays
+// usable for the next request.
+func TestOversizedBodyOverTCP(t *testing.T) {
+	ts := newTestServer(t)
+	ts.srv.maxPayloadBytes = 1000
+	_, key := ts.newKey(t)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() { served <- ts.srv.Serve(ctx, ln) }()
+	t.Cleanup(func() { cancel(); <-served })
+
+	for _, path := range []string{"/v1/events", "/v1/endpoints"} {
+		t.Run(path, func(t *testing.T) {
+			conn, err := net.Dial("tcp", ln.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+			body := `{"event_type":"big","url":"https://example.com","payload":{"x":"` + strings.Repeat("a", 1<<20) + `"}}`
+			req := "POST " + path + " HTTP/1.1\r\nHost: hookd\r\nAuthorization: Bearer " + key +
+				"\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\n\r\n" + body +
+				"GET /healthz HTTP/1.1\r\nHost: hookd\r\n\r\n"
+			wrote := make(chan error, 1)
+			go func() { _, err := io.WriteString(conn, req); wrote <- err }()
+			if err := <-wrote; err != nil {
+				t.Fatalf("write request: %v", err)
+			}
+
+			br := bufio.NewReader(conn)
+			for _, want := range []int{http.StatusRequestEntityTooLarge, http.StatusOK} {
+				resp, err := http.ReadResponse(br, nil)
+				if err != nil {
+					t.Fatalf("read response (want %d): %v", want, err)
+				}
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode != want {
+					t.Fatalf("status = %d, want %d", resp.StatusCode, want)
+				}
+			}
+		})
 	}
 }

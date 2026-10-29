@@ -122,12 +122,11 @@ func (s *Server) decodeEvent(w http.ResponseWriter, r *http.Request) (in store.N
 			fmt.Sprintf("payload is larger than %d bytes", s.maxPayloadBytes)
 	}
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxPayloadBytes+envelopeOverhead))
+	body, oversized, err := readBody(w, r, s.maxPayloadBytes+envelopeOverhead)
+	if oversized {
+		return tooLarge()
+	}
 	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			return tooLarge()
-		}
 		return store.NewEvent{}, http.StatusBadRequest, CodeInvalidRequest, "could not read the request body"
 	}
 

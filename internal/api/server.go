@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -151,3 +152,27 @@ type headerRecorder struct {
 func (h *headerRecorder) Header() http.Header         { return h.header }
 func (h *headerRecorder) Write(b []byte) (int, error) { return len(b), nil }
 func (h *headerRecorder) WriteHeader(status int)      { h.status = status }
+
+// maxDrainBytes is the most of an oversized request body that is read and
+// thrown away after the 413 is decided.
+const maxDrainBytes = 4 << 20
+
+// readBody reads the request body if it is at most limit bytes long. If it
+// is longer, readBody returns tooLarge and first reads and discards the rest
+// of the body, up to maxDrainBytes. Closing a connection whose request body
+// is still unread makes the kernel send RST, which can drop the 413 before
+// a proxy such as nginx reads it; a drained connection is closed cleanly or
+// kept alive. A body too long to drain closes the connection after the reply.
+func readBody(w http.ResponseWriter, r *http.Request, limit int64) (body []byte, tooLarge bool, err error) {
+	body, err = io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(body)) <= limit {
+		return body, false, nil
+	}
+	if n, err := io.Copy(io.Discard, io.LimitReader(r.Body, maxDrainBytes)); err != nil || n == maxDrainBytes {
+		w.Header().Set("Connection", "close")
+	}
+	return nil, true, nil
+}
