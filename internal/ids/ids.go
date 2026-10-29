@@ -19,6 +19,7 @@ const (
 	PrefixAPIKey       = "key_"
 	PrefixTestReceiver = "trcv_"
 	PrefixTestRequest  = "treq_"
+	PrefixAttempt      = "att_"
 )
 
 const (
@@ -62,6 +63,9 @@ func NewTestReceiverID() string { return New(PrefixTestReceiver) }
 // NewTestRequestID returns a new ID (treq_…) for a request received by a
 // test receiver.
 func NewTestRequestID() string { return New(PrefixTestRequest) }
+
+// NewAttemptID returns a new delivery attempt ID (att_…).
+func NewAttemptID() string { return New(PrefixAttempt) }
 
 // NewSecret returns a new endpoint signing secret: "whsec_" followed by the
 // standard base64 encoding of 24 random bytes.

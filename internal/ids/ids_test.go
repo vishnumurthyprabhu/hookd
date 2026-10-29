@@ -27,6 +27,7 @@ func TestIDFormats(t *testing.T) {
 		{"key_", NewAPIKeyID},
 		{"trcv_", NewTestReceiverID},
 		{"treq_", NewTestRequestID},
+		{"att_", NewAttemptID},
 	}
 	for _, c := range cases {
 		id := c.gen()

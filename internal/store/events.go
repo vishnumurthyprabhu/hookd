@@ -89,8 +89,8 @@ func (s *SQLStore) CreateEvent(ctx context.Context, accountID string, in NewEven
 		}
 		for _, epID := range targets {
 			if _, err := s.exec(ctx, tx,
-				`INSERT INTO deliveries (id, event_id, endpoint_id, status, created_at) VALUES (?, ?, ?, ?, ?)`,
-				ids.NewDeliveryID(), e.ID, epID, DeliveryPending, s.d.timeArg(now)); err != nil {
+				`INSERT INTO deliveries (id, event_id, endpoint_id, status, created_at, next_attempt_at) VALUES (?, ?, ?, ?, ?, ?)`,
+				ids.NewDeliveryID(), e.ID, epID, DeliveryPending, s.d.timeArg(now), s.d.timeArg(now)); err != nil {
 				return fmt.Errorf("store: create event: insert delivery: %w", err)
 			}
 			e.Deliveries = append(e.Deliveries, DeliveryStatus{EndpointID: epID, Status: DeliveryPending})
