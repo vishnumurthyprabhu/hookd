@@ -15,6 +15,7 @@ const (
 
 	CodeInvalidJSON           = "invalid_json"
 	CodeInvalidRequest        = "invalid_request"
+	CodeInvalidURL            = "invalid_url"
 	CodeInvalidEventType      = "invalid_event_type"
 	CodeInvalidPayload        = "invalid_payload"
 	CodePayloadTooLarge       = "payload_too_large"
