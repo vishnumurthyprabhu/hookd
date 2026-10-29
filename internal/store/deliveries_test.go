@@ -466,6 +466,92 @@ func TestClaimDeliveryDueFirst(t *testing.T) {
 	})
 }
 
+// TestEndpointGoneMakesRetriesDue checks that disabling or deleting an
+// endpoint makes its deliveries waiting for a retry due at once, and leaves
+// other endpoints' deliveries waiting.
+func TestEndpointGoneMakesRetriesDue(t *testing.T) {
+	for name, gone := range map[string]func(ctx context.Context, s store.Store, accountID, id string) error{
+		"disabled": func(ctx context.Context, s store.Store, accountID, id string) error {
+			_, err := s.UpdateEndpoint(ctx, accountID, id, store.EndpointUpdate{Enabled: ptr(false)})
+			return err
+		},
+		"deleted": func(ctx context.Context, s store.Store, accountID, id string) error {
+			return s.DeleteEndpoint(ctx, accountID, id)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+				ctx := context.Background()
+				c := &clock{t: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
+				s := db.New(t, store.WithClock(c.now))
+				acct := mustAccount(t, s)
+				ep1 := mustEndpoint(t, s, acct.ID, store.NewEndpoint{URL: "https://example.com/1"})
+				ep2 := mustEndpoint(t, s, acct.ID, store.NewEndpoint{URL: "https://example.com/2"})
+				mustEvent(t, s, acct.ID, store.NewEvent{EventType: "a", Payload: []byte(`{}`)})
+				next := c.t.Add(5 * time.Hour)
+				for range 2 {
+					d := mustClaim(t, s, time.Minute)
+					mustRecordAttempt(t, s, d.ID, store.AttemptResult{Number: 1, Outcome: store.AttemptFailed, Error: "boom", NextAttemptAt: &next})
+				}
+
+				c.advance(time.Minute)
+				mustClaimNone(t, s, time.Minute)
+				if err := gone(ctx, s, acct.ID, ep1.ID); err != nil {
+					t.Fatal(err)
+				}
+				got := mustClaim(t, s, time.Minute)
+				if got.EndpointID != ep1.ID || got.Attempts != 1 {
+					t.Fatalf("claimed %+v, want the retry for %s", got, ep1.ID)
+				}
+				mustRecordAttempt(t, s, got.ID, store.AttemptResult{Number: 2, Outcome: store.AttemptFailed, Error: "endpoint_disabled"})
+				// The other endpoint's delivery still waits.
+				mustClaimNone(t, s, time.Minute)
+				c.advance(5*time.Hour - time.Minute)
+				if got := mustClaim(t, s, time.Minute); got.EndpointID != ep2.ID {
+					t.Fatalf("claimed %+v, want the retry for %s", got, ep2.ID)
+				}
+			})
+		})
+	}
+}
+
+// TestEnableEndpointKeepsRetriesWaiting checks that enabling an endpoint,
+// whether it was disabled or not, does not move its deliveries' next attempt.
+func TestEnableEndpointKeepsRetriesWaiting(t *testing.T) {
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		c := &clock{t: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
+		s := db.New(t, store.WithClock(c.now))
+		acct := mustAccount(t, s)
+		ep := mustEndpoint(t, s, acct.ID, store.NewEndpoint{URL: "https://example.com/hook"})
+		enable := func(on bool) {
+			t.Helper()
+			if _, err := s.UpdateEndpoint(ctx, acct.ID, ep.ID, store.EndpointUpdate{Enabled: ptr(on)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mustEvent(t, s, acct.ID, store.NewEvent{EventType: "a", Payload: []byte(`{}`)})
+		d := mustClaim(t, s, time.Minute)
+		next := c.t.Add(5 * time.Hour)
+		mustRecordAttempt(t, s, d.ID, store.AttemptResult{Number: 1, Outcome: store.AttemptFailed, Error: "boom", NextAttemptAt: &next})
+
+		// Enabling an enabled endpoint, or changing anything else, is not a
+		// disable.
+		enable(true)
+		if _, err := s.UpdateEndpoint(ctx, acct.ID, ep.ID, store.EndpointUpdate{URL: ptr("https://example.com/other")}); err != nil {
+			t.Fatal(err)
+		}
+		mustClaimNone(t, s, time.Minute)
+
+		// Disabled then enabled again: the delivery stays due.
+		enable(false)
+		enable(true)
+		if got := mustClaim(t, s, time.Minute); got.ID != d.ID {
+			t.Fatalf("claimed %+v, want %s", got, d.ID)
+		}
+	})
+}
+
 func TestCountWaitingRetries(t *testing.T) {
 	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
 		ctx := context.Background()

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"hookd/internal/ids"
 )
@@ -154,6 +155,7 @@ func (s *SQLStore) UpdateEndpoint(ctx context.Context, accountID, id string, u E
 		if u.EventTypes != nil {
 			e.EventTypes = normalizeEventTypes(*u.EventTypes)
 		}
+		wasEnabled := e.Enabled
 		if u.Enabled != nil {
 			e.Enabled = *u.Enabled
 		}
@@ -170,6 +172,11 @@ func (s *SQLStore) UpdateEndpoint(ctx context.Context, accountID, id string, u E
 			accountID, id); err != nil {
 			return fmt.Errorf("store: update endpoint: %w", err)
 		}
+		if wasEnabled && !e.Enabled {
+			if err := s.makePendingDue(ctx, tx, id, e.UpdatedAt); err != nil {
+				return fmt.Errorf("store: update endpoint: %w", err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -180,7 +187,8 @@ func (s *SQLStore) UpdateEndpoint(ctx context.Context, accountID, id string, u E
 
 // DeleteEndpoint implements Store.
 func (s *SQLStore) DeleteEndpoint(ctx context.Context, accountID, id string) error {
-	now := s.d.timeArg(s.nowUTC())
+	nowUTC := s.nowUTC()
+	now := s.d.timeArg(nowUTC)
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		res, err := s.exec(ctx, tx,
 			`UPDATE endpoints SET deleted_at = ?, updated_at = ?
@@ -196,6 +204,9 @@ func (s *SQLStore) DeleteEndpoint(ctx context.Context, accountID, id string) err
 		if n == 0 {
 			return ErrNotFound
 		}
+		if err := s.makePendingDue(ctx, tx, id, nowUTC); err != nil {
+			return fmt.Errorf("store: delete endpoint: %w", err)
+		}
 		// The test_receivers row stays, so that its URL answers 404.
 		if _, err := s.exec(ctx, tx,
 			`DELETE FROM test_requests
@@ -205,6 +216,20 @@ func (s *SQLStore) DeleteEndpoint(ctx context.Context, accountID, id string) err
 		}
 		return nil
 	})
+}
+
+// makePendingDue makes the endpoint's pending deliveries due at now, so that
+// the workers claim them at once and record that the endpoint is disabled,
+// instead of leaving them waiting for a retry. Deliveries already due keep
+// their place in the queue.
+func (s *SQLStore) makePendingDue(ctx context.Context, tx *sql.Tx, endpointID string, now time.Time) error {
+	if _, err := s.exec(ctx, tx,
+		`UPDATE deliveries SET next_attempt_at = ?
+		WHERE endpoint_id = ? AND status = ? AND next_attempt_at > ?`,
+		s.d.timeArg(now), endpointID, DeliveryPending, s.d.timeArg(now)); err != nil {
+		return fmt.Errorf("make pending deliveries due: %w", err)
+	}
+	return nil
 }
 
 // scanner is satisfied by both *sql.Row and *sql.Rows.
