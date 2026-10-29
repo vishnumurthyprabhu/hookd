@@ -75,6 +75,8 @@ type endpointFormData struct {
 	Description string
 	EventTypes  string
 	Errors      []string
+	// The fields below are only set for a test endpoint.
+	testEndpointData
 }
 
 // endpointInput is a checked endpoint form.
@@ -177,14 +179,9 @@ func (h *Handler) showEndpoint(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	test, ok := h.isTestEndpoint(w, r, acct.ID, ep.ID)
-	if !ok {
-		return
-	}
-	h.render(w, r, http.StatusOK, "endpoint", "Endpoint", endpointFormData{
+	h.renderEndpoint(w, r, http.StatusOK, endpointFormData{
 		Account:     acct,
 		Endpoint:    ep,
-		Test:        test,
 		URL:         ep.URL,
 		Description: ep.Description,
 		EventTypes:  strings.Join(ep.EventTypes, "\n"),
@@ -199,12 +196,8 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	in, form := parseEndpointForm(r)
 	if len(form.Errors) > 0 {
-		test, ok := h.isTestEndpoint(w, r, acct.ID, ep.ID)
-		if !ok {
-			return
-		}
-		form.Account, form.Endpoint, form.Test = acct, ep, test
-		h.render(w, r, http.StatusUnprocessableEntity, "endpoint", "Endpoint", form)
+		form.Account, form.Endpoint = acct, ep
+		h.renderEndpoint(w, r, http.StatusUnprocessableEntity, form)
 		return
 	}
 	_, err := h.store.UpdateEndpoint(r.Context(), acct.ID, ep.ID, store.EndpointUpdate{
@@ -302,23 +295,6 @@ func (h *Handler) accountEndpoint(w http.ResponseWriter, r *http.Request) (store
 		return store.Account{}, store.Endpoint{}, false
 	}
 	return acct, ep, true
-}
-
-// isTestEndpoint reports whether the endpoint is a test endpoint. If the
-// store fails, it writes the error page and returns false as its second
-// result.
-func (h *Handler) isTestEndpoint(w http.ResponseWriter, r *http.Request, acctID, epID string) (test, ok bool) {
-	rcvs, err := h.store.ListTestReceivers(r.Context(), acctID)
-	if err != nil {
-		h.storeError(w, r, err)
-		return false, false
-	}
-	for _, rc := range rcvs {
-		if rc.EndpointID == epID {
-			return true, true
-		}
-	}
-	return false, true
 }
 
 // endpointDone writes the error page for err, the result of a store call

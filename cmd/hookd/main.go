@@ -173,10 +173,15 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 		api.WithWake(pool.Wake()),
 	}
 	if cfg.AdminUI {
+		// The listener's own address, so a listen address with port 0
+		// still gives the real port.
+		rcv := cfg
+		rcv.ListenAddr = ln.Addr().String()
 		opts = append(opts, api.WithAdmin(admin.New(s, log,
 			admin.WithSettings(mgr),
 			admin.WithWake(pool.Wake()),
 			admin.WithMaxPayloadBytes(maxPayload),
+			admin.WithReceiverBaseURL(rcv.ReceiverBaseURL()),
 		)))
 	}
 	srv := api.New(s, log, opts...)

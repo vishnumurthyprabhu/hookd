@@ -35,3 +35,7 @@ form.stack .error, form.stack .hint { flex-basis: auto; }
 pre.payload { background: #fff; border: 1px solid #ddd; padding: .75rem; overflow-x: auto; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; }
 dd { margin: 0; }
+.request { background: #fff; border: 1px solid #ddd; padding: .5rem .75rem; margin: .75rem 0; }
+.request dl { margin: 0 0 .5rem; }
+.ok { color: #1e6b34; }
+.failed { color: #8a1c1c; }

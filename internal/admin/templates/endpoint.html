@@ -25,4 +25,46 @@
 <button type="submit">Save</button>
 </form>
 </section>
+{{if .Test}}
+<section>
+<h2>Answer status</h2>
+<form method="post" action="/admin/accounts/{{.Account.ID}}/endpoints/{{.Endpoint.ID}}/test-status">
+{{range .StatusErrors}}<p class="error" role="alert">{{.}}</p>{{end}}
+<label for="status">The built-in receiver answers with</label>
+<input id="status" name="status" type="number" min="100" max="599" value="{{.Status}}" required>
+<button type="submit">Save</button>
+<p class="hint">From 100 to 599. Use 500, for example, to see failed deliveries.</p>
+</form>
+</section>
+
+<section>
+<h2>Received requests</h2>
+<p class="hint">Newest first. The last 100 are kept.</p>
+{{if .Requests}}
+<form method="post" action="/admin/accounts/{{.Account.ID}}/endpoints/{{.Endpoint.ID}}/test-requests/clear">
+<button type="submit">Clear</button>
+</form>
+{{range .Requests}}
+<article class="request" id="request-{{.ID}}">
+<dl>
+<dt>Received</dt><dd>{{time .ReceivedAt}}</dd>
+<dt>webhook-id</dt><dd>{{if .WebhookID}}<code>{{.WebhookID}}</code>{{else}}none{{end}}</dd>
+<dt>Event type</dt><dd>{{if .EventType}}<code>{{.EventType}}</code>{{else}}unknown{{end}}</dd>
+<dt>Signature</dt><dd>{{if .Verified}}<span class="ok">signature verified</span>{{else}}<span class="failed">not verified: {{.VerifyError}}</span>{{end}}</dd>
+<dt>Answered</dt><dd>{{.ResponseStatus}}</dd>
+</dl>
+<details><summary>Headers</summary>
+<pre class="payload">{{range .Headers}}{{.Name}}: {{.Value}}
+{{end}}</pre>
+</details>
+<details><summary>Body</summary>
+<pre class="payload">{{.Body}}</pre>
+</details>
+</article>
+{{end}}
+{{else}}
+<p>No requests received yet.</p>
+{{end}}
+</section>
+{{end}}
 {{end}}

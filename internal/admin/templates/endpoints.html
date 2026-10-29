@@ -1,6 +1,6 @@
 {{define "content"}}
 <p>Account <a href="/admin/accounts/{{.Account.ID}}">{{.Account.Name}}</a> (<code>{{.Account.ID}}</code>).</p>
-<p><a href="/admin/accounts/{{.Account.ID}}/endpoints/new">New endpoint</a></p>
+<p><a href="/admin/accounts/{{.Account.ID}}/endpoints/new">New endpoint</a> · <a href="/admin/accounts/{{.Account.ID}}/test-endpoints/new">New test endpoint</a></p>
 
 {{if .Endpoints}}
 <div class="scroll">

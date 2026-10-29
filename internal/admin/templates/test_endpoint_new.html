@@ -1,0 +1,17 @@
+{{define "content"}}
+<p>Account <a href="/admin/accounts/{{.Account.ID}}">{{.Account.Name}}</a> (<code>{{.Account.ID}}</code>).</p>
+<p>A test endpoint is an ordinary endpoint of this account whose URL points at a receiver built into Hookd. The receiver checks each request's signature and keeps the last 100 requests, shown on the endpoint's page.</p>
+<form method="post" action="/admin/accounts/{{.Account.ID}}/test-endpoints/new" class="stack">
+{{range .Errors}}<p class="error" role="alert">{{.}}</p>{{end}}
+<label for="description">Description (optional)</label>
+<input id="description" name="description" value="{{.Description}}">
+<label for="event_types">Event types</label>
+<textarea id="event_types" name="event_types" rows="4">{{.EventTypes}}</textarea>
+<p class="hint">Separate event types with commas or new lines, for example <code>order.paid</code>. Leave empty to receive all event types.</p>
+<label for="status">Answer status</label>
+<input id="status" name="status" type="number" min="100" max="599" value="{{.Status}}" required>
+<p class="hint">The HTTP status the receiver answers with, from 100 to 599. Use 500, for example, to see failed deliveries.</p>
+<button type="submit">Create test endpoint</button>
+<a href="/admin/accounts/{{.Account.ID}}/endpoints">Cancel</a>
+</form>
+{{end}}

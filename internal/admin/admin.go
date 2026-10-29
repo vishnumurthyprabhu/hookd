@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"hookd/internal/config"
 	"hookd/internal/settings"
 	"hookd/internal/store"
 )
@@ -38,6 +39,9 @@ type Handler struct {
 	wake chan<- struct{}
 	// maxPayloadBytes returns the current largest event payload accepted.
 	maxPayloadBytes func() int64
+	// receiverBaseURL is put in new test endpoints' URLs, without a
+	// trailing slash.
+	receiverBaseURL string
 }
 
 // defaultMaxPayloadBytes is the largest event payload the send-event form
@@ -62,6 +66,14 @@ func WithMaxPayloadBytes(max func() int64) Option {
 	return func(h *Handler) { h.maxPayloadBytes = max }
 }
 
+// WithReceiverBaseURL sets the base URL that the delivery workers use to
+// reach the built-in test receiver (config.Config.ReceiverBaseURL). New test
+// endpoints get it in their URL. Without it, the URL derived from the default
+// listen address is used.
+func WithReceiverBaseURL(url string) Option {
+	return func(h *Handler) { h.receiverBaseURL = strings.TrimRight(url, "/") }
+}
+
 // WithSettings serves the settings and health page, which shows and changes
 // the settings of m. Without it the page is not found.
 func WithSettings(m *settings.Manager) Option {
@@ -71,7 +83,8 @@ func WithSettings(m *settings.Manager) Option {
 // New returns the admin UI on st, logging to log.
 func New(st store.Store, log *slog.Logger, opts ...Option) *Handler {
 	h := &Handler{store: st, log: log, pages: parsePages(),
-		maxPayloadBytes: func() int64 { return defaultMaxPayloadBytes }}
+		maxPayloadBytes: func() int64 { return defaultMaxPayloadBytes },
+		receiverBaseURL: config.Default().ReceiverBaseURL()}
 	for _, o := range opts {
 		o(h)
 	}
@@ -101,6 +114,11 @@ func New(st store.Store, log *slog.Logger, opts ...Option) *Handler {
 	mux.HandleFunc("GET /admin/accounts/{acct}/endpoints/{ep}/delete", h.confirmDeleteEndpoint)
 	mux.HandleFunc("POST /admin/accounts/{acct}/endpoints/{ep}/delete", h.deleteEndpoint)
 	mux.HandleFunc("GET /admin/accounts/{acct}/endpoints/{ep}/secret", h.showEndpointSecret)
+	mux.HandleFunc("POST /admin/accounts/{acct}/endpoints/{ep}/test-status", h.setTestStatus)
+	mux.HandleFunc("POST /admin/accounts/{acct}/endpoints/{ep}/test-requests/clear", h.clearTestRequests)
+	mux.HandleFunc("GET /admin/accounts/{acct}/test-endpoints/new", h.newTestEndpointForm)
+	mux.HandleFunc("POST /admin/accounts/{acct}/test-endpoints/new", h.createTestEndpoint)
+	mux.HandleFunc("POST /admin/test-receiver/{trcv}", h.receiveTestRequest)
 	mux.HandleFunc("GET /admin/accounts/{acct}/events", h.listEvents)
 	mux.HandleFunc("GET /admin/accounts/{acct}/events/new", h.newEventForm)
 	mux.HandleFunc("POST /admin/accounts/{acct}/events/new", h.sendEvent)
