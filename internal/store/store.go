@@ -67,6 +67,23 @@ type Store interface {
 	// GetEvent returns one of the account's events with its deliveries, or
 	// ErrNotFound if it does not exist or belongs to another account.
 	GetEvent(ctx context.Context, accountID, id string) (Event, error)
+
+	// ClaimDelivery atomically takes the oldest delivery that is pending, or
+	// in progress with an expired lease, marks it in progress and locks it
+	// for lease. No other caller can claim it until the lease expires. ok is
+	// false when there is nothing to claim. lease must be positive.
+	ClaimDelivery(ctx context.Context, lease time.Duration) (d ClaimedDelivery, ok bool, err error)
+	// GetDeliveryJob loads what a worker needs to send a delivery: its event,
+	// its endpoint and the endpoint's signing secret. The endpoint is
+	// returned even if it has been disabled or deleted since the delivery was
+	// created; see DeliveryJob.EndpointDeleted. It returns ErrNotFound if the
+	// delivery does not exist.
+	GetDeliveryJob(ctx context.Context, deliveryID string) (DeliveryJob, error)
+	// RecordDeliveryResult stores the outcome of an in-progress delivery and
+	// releases its lease. r.Status must be DeliverySucceeded or
+	// DeliveryFailed. It returns ErrNotFound if the delivery does not exist
+	// or is not in progress.
+	RecordDeliveryResult(ctx context.Context, deliveryID string, r DeliveryResult) error
 }
 
 // Account is a customer of Hookd. All other records belong to one.
@@ -149,6 +166,44 @@ type DeliveryStatus struct {
 	ResponseStatus int
 	// Error describes why the delivery failed, or is empty.
 	Error string
+}
+
+// ClaimedDelivery is a delivery taken by ClaimDelivery.
+type ClaimedDelivery struct {
+	ID         string
+	EventID    string
+	EndpointID string
+	// LockedUntil is when the lease expires and the delivery can be claimed
+	// again.
+	LockedUntil time.Time
+}
+
+// DeliveryJob is what a worker needs to send one delivery.
+type DeliveryJob struct {
+	DeliveryID string
+	// Event is the event to send. Its Deliveries is empty.
+	Event Event
+	// Endpoint is the target, even if it is disabled or deleted.
+	Endpoint Endpoint
+	// Secret is the endpoint's signing secret.
+	Secret string
+	// EndpointDeleted is true if the endpoint has been deleted.
+	EndpointDeleted bool
+}
+
+// DeliveryResult is the outcome of one delivery attempt.
+type DeliveryResult struct {
+	// Status is DeliverySucceeded or DeliveryFailed.
+	Status string
+	// ResponseStatus is the endpoint's HTTP status, or 0 if there was none.
+	ResponseStatus int
+	// Error describes why the delivery failed, or is empty.
+	Error string
+	// Latency is how long the attempt took.
+	Latency time.Duration
+	// AttemptedAt is when the attempt started. Zero means the store's
+	// current time.
+	AttemptedAt time.Time
 }
 
 // EndpointUpdate holds the fields to change on an endpoint. Nil fields are
