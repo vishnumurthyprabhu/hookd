@@ -7,9 +7,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
+	"hookd/internal/api"
 	"hookd/internal/config"
 	"hookd/internal/store"
 )
@@ -89,8 +93,28 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 			log.Info("applied migration", "version", v)
 		}
 	}
-	fmt.Fprintln(stdout, "serve: not implemented")
+
+	ln, err := net.Listen("tcp", cfg.ListenAddr)
+	if err != nil {
+		log.Error("listen", "err", err)
+		return 1
+	}
+	log.Info("listening", "addr", ln.Addr().String())
+
+	ctx, stop := signalContext()
+	defer stop()
+	if err := api.New(s, log).Serve(ctx, ln); err != nil {
+		log.Error("serve", "err", err)
+		return 1
+	}
+	log.Info("stopped")
 	return 0
+}
+
+// signalContext returns the context serve runs under: it is done on SIGINT
+// or SIGTERM. Tests replace it.
+var signalContext = func() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
 func migrate(cfg config.Config, args []string, stdout, stderr io.Writer) int {

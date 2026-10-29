@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"net"
+	"net/http"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"hookd/internal/config"
 	"hookd/internal/ids"
@@ -14,11 +17,69 @@ import (
 )
 
 // useTempDB points HOOKD_DB_PATH at a new SQLite file and returns its path.
+// It also makes serve listen on a free port and stop as soon as it starts.
 func useTempDB(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "hookd.db")
 	t.Setenv("HOOKD_DB_PATH", path)
+	t.Setenv("HOOKD_LISTEN_ADDR", "127.0.0.1:0")
+	setSignalContext(t, func() (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx, cancel
+	})
 	return path
+}
+
+func setSignalContext(t *testing.T, f func() (context.Context, context.CancelFunc)) {
+	old := signalContext
+	signalContext = f
+	t.Cleanup(func() { signalContext = old })
+}
+
+func TestServeHealthz(t *testing.T) {
+	useTempDB(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	t.Setenv("HOOKD_LISTEN_ADDR", addr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	setSignalContext(t, func() (context.Context, context.CancelFunc) { return ctx, cancel })
+
+	done := make(chan int, 1)
+	var stdout, stderr bytes.Buffer
+	go func() { done <- run([]string{"serve"}, &stdout, &stderr) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := http.Get("http://" + addr + "/healthz")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET /healthz: status %d, want 200", resp.StatusCode)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server did not answer: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("serve exit code %d, stderr %q", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not stop after its context was cancelled")
+	}
 }
 
 func TestRun(t *testing.T) {
@@ -33,7 +94,7 @@ func TestRun(t *testing.T) {
 		{name: "no args prints usage", args: nil, code: 2, stderr: "Usage: hookd"},
 		{name: "help", args: []string{"--help"}, code: 0, stdout: "Usage: hookd"},
 		{name: "unknown command", args: []string{"frobnicate"}, code: 2, stderr: `unknown command "frobnicate"`},
-		{name: "serve", args: []string{"serve"}, code: 0, stdout: "serve: not implemented"},
+		{name: "serve", args: []string{"serve"}, code: 0, stderr: "stopped"},
 		{name: "migrate", args: []string{"migrate"}, code: 0, stdout: "applied 0001_init"},
 		{
 			name:   "account create without migrations",
