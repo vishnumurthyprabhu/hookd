@@ -1,0 +1,238 @@
+{
+  "title": "Hookd",
+  "components": [
+    {
+      "id": "client-app",
+      "name": "Developer's app",
+      "kind": "external",
+      "group": "Outside",
+      "description": "Customer system that registers endpoints and sends events to Hookd's JSON API with a bearer API key."
+    },
+    {
+      "id": "reverse-proxy",
+      "name": "Reverse proxy (nginx / load balancer)",
+      "kind": "external",
+      "group": "Outside",
+      "description": "Production TLS front that forwards requests to one or more hookd instances."
+    },
+    {
+      "id": "receiver",
+      "name": "Webhook receiver",
+      "kind": "external",
+      "group": "Outside",
+      "description": "A registered endpoint URL that receives signed Standard Webhooks POSTs."
+    },
+    {
+      "id": "operator-cli",
+      "name": "hookd CLI",
+      "kind": "cli",
+      "group": "hookd binary",
+      "description": "Single binary with serve, migrate, account create and apikey create/list/revoke subcommands."
+    },
+    {
+      "id": "api",
+      "name": "HTTP API",
+      "kind": "service",
+      "group": "hookd binary",
+      "description": "Versioned /v1 JSON routes for endpoints, events and secrets on http.ServeMux, plus /healthz."
+    },
+    {
+      "id": "auth",
+      "name": "API key auth",
+      "kind": "library",
+      "group": "hookd binary",
+      "description": "Middleware that hashes the bearer key, resolves the account and scopes every request to it."
+    },
+    {
+      "id": "delivery-workers",
+      "name": "Delivery workers",
+      "kind": "worker",
+      "group": "hookd binary",
+      "description": "Goroutine pool, woken by the API or by polling, that claims deliveries, signs them and POSTs each once."
+    },
+    {
+      "id": "signer",
+      "name": "Standard Webhooks signer",
+      "kind": "library",
+      "group": "hookd binary",
+      "description": "Builds webhook-id, webhook-timestamp and HMAC-SHA256 webhook-signature headers."
+    },
+    {
+      "id": "store",
+      "name": "Store",
+      "kind": "library",
+      "group": "hookd binary",
+      "description": "One Store interface with a SQL implementation, a SQLite/PostgreSQL dialect layer and embedded migrations."
+    },
+    {
+      "id": "config",
+      "name": "Config",
+      "kind": "library",
+      "group": "hookd binary",
+      "description": "Reads every HOOKD_* environment setting with local defaults and sets up logging."
+    },
+    {
+      "id": "ids",
+      "name": "IDs and secrets",
+      "kind": "library",
+      "group": "hookd binary",
+      "description": "Prefixed ULIDs, endpoint signing secrets and API key generation."
+    },
+    {
+      "id": "deliveries-queue",
+      "name": "Deliveries queue",
+      "kind": "queue",
+      "group": "Database",
+      "description": "The deliveries table, one row per event and endpoint, claimed by workers under a lease (SKIP LOCKED on PostgreSQL)."
+    },
+    {
+      "id": "sqlite",
+      "name": "SQLite",
+      "kind": "store",
+      "group": "Database",
+      "description": "Local database file via the pure Go driver; the default for development and tests."
+    },
+    {
+      "id": "postgres",
+      "name": "PostgreSQL",
+      "kind": "store",
+      "group": "Database",
+      "description": "Production database holding accounts, API keys, endpoints, events and deliveries."
+    },
+    {
+      "id": "test-receiver",
+      "name": "Test receiver",
+      "kind": "other",
+      "group": "Dev tools",
+      "description": "Dev-only HTTP receiver that verifies each webhook with the official library and answers a configured status."
+    },
+    {
+      "id": "standard-webhooks-lib",
+      "name": "Standard Webhooks Go library",
+      "kind": "external",
+      "group": "Dev tools",
+      "description": "Official verifier used only by tests and the test receiver to prove signatures are correct."
+    }
+  ],
+  "links": [
+    {
+      "from": "client-app",
+      "to": "reverse-proxy",
+      "label": "HTTPS + Bearer key"
+    },
+    {
+      "from": "reverse-proxy",
+      "to": "api",
+      "label": "forwards requests"
+    },
+    {
+      "from": "client-app",
+      "to": "api",
+      "label": "calls directly (local)"
+    },
+    {
+      "from": "operator-cli",
+      "to": "api",
+      "label": "starts (serve)"
+    },
+    {
+      "from": "operator-cli",
+      "to": "delivery-workers",
+      "label": "starts (serve)"
+    },
+    {
+      "from": "operator-cli",
+      "to": "store",
+      "label": "migrate, accounts, API keys"
+    },
+    {
+      "from": "operator-cli",
+      "to": "config",
+      "label": "loads settings"
+    },
+    {
+      "from": "api",
+      "to": "auth",
+      "label": "authenticates"
+    },
+    {
+      "from": "auth",
+      "to": "store",
+      "label": "looks up key hash"
+    },
+    {
+      "from": "api",
+      "to": "store",
+      "label": "reads and writes"
+    },
+    {
+      "from": "api",
+      "to": "delivery-workers",
+      "label": "wake signal"
+    },
+    {
+      "from": "delivery-workers",
+      "to": "store",
+      "label": "claims, records results"
+    },
+    {
+      "from": "delivery-workers",
+      "to": "signer",
+      "label": "signs requests"
+    },
+    {
+      "from": "delivery-workers",
+      "to": "receiver",
+      "label": "POST signed webhook"
+    },
+    {
+      "from": "delivery-workers",
+      "to": "test-receiver",
+      "label": "POST (dev)"
+    },
+    {
+      "from": "store",
+      "to": "deliveries-queue",
+      "label": "enqueues and claims"
+    },
+    {
+      "from": "store",
+      "to": "ids",
+      "label": "generates IDs, secrets, keys"
+    },
+    {
+      "from": "store",
+      "to": "config",
+      "label": "DB settings"
+    },
+    {
+      "from": "store",
+      "to": "sqlite",
+      "label": "local"
+    },
+    {
+      "from": "store",
+      "to": "postgres",
+      "label": "production"
+    },
+    {
+      "from": "deliveries-queue",
+      "to": "sqlite",
+      "label": "table in"
+    },
+    {
+      "from": "deliveries-queue",
+      "to": "postgres",
+      "label": "table in"
+    },
+    {
+      "from": "test-receiver",
+      "to": "standard-webhooks-lib",
+      "label": "verifies with"
+    }
+  ],
+  "meta": {
+    "commit": "a2e6af58e55011b0d8aa5fd8623257669503f524",
+    "drawnAt": "2026-10-29T07:23:42.828Z"
+  }
+}
