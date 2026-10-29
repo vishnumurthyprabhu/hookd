@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"hookd/internal/config"
+	"hookd/internal/store"
 )
 
 const usage = `Usage: hookd <command> [options]
@@ -69,6 +71,24 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 	}
 	log := cfg.NewLogger(stderr)
 	log.Debug("starting", "listen_addr", cfg.ListenAddr, "db_driver", cfg.DB.Driver)
+
+	ctx := context.Background()
+	s, err := store.Open(ctx, cfg.DB)
+	if err != nil {
+		log.Error("open database", "err", err)
+		return 1
+	}
+	defer s.Close()
+	if cfg.AutoMigrate {
+		applied, err := s.Migrate(ctx)
+		if err != nil {
+			log.Error("apply migrations", "err", err)
+			return 1
+		}
+		for _, v := range applied {
+			log.Info("applied migration", "version", v)
+		}
+	}
 	fmt.Fprintln(stdout, "serve: not implemented")
 	return 0
 }
@@ -78,7 +98,24 @@ func migrate(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return flagExit(err)
 	}
-	fmt.Fprintln(stdout, "migrate: not implemented")
+	ctx := context.Background()
+	s, err := store.Open(ctx, cfg.DB)
+	if err != nil {
+		fmt.Fprintf(stderr, "hookd migrate: %v\n", err)
+		return 1
+	}
+	defer s.Close()
+	applied, err := s.Migrate(ctx)
+	for _, v := range applied {
+		fmt.Fprintf(stdout, "applied %s\n", v)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "hookd migrate: %v\n", err)
+		return 1
+	}
+	if len(applied) == 0 {
+		fmt.Fprintln(stdout, "database is up to date")
+	}
 	return 0
 }
 
@@ -93,7 +130,25 @@ func accountCreate(cfg config.Config, args []string, stdout, stderr io.Writer) i
 		fs.Usage()
 		return 2
 	}
-	fmt.Fprintln(stdout, "account create: not implemented")
+	ctx := context.Background()
+	s, err := store.Open(ctx, cfg.DB)
+	if err != nil {
+		fmt.Fprintf(stderr, "hookd account create: %v\n", err)
+		return 1
+	}
+	defer s.Close()
+	acct, err := s.CreateAccount(ctx, strings.TrimSpace(*name))
+	if err != nil {
+		fmt.Fprintf(stderr, "hookd account create: %v (has \"hookd migrate\" been run?)\n", err)
+		return 1
+	}
+	_, key, err := s.CreateAPIKey(ctx, acct.ID)
+	if err != nil {
+		fmt.Fprintf(stderr, "hookd account create: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "account_id: %s\napi_key:    %s\n", acct.ID, key)
+	fmt.Fprintln(stderr, "Keep the API key safe: it is shown only once.")
 	return 0
 }
 
