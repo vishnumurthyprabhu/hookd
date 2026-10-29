@@ -24,3 +24,4 @@ button { cursor: pointer; }
 .secret { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 .secret code { background: #fff; border: 1px solid #ccc; padding: .35rem .5rem; }
 .pager a { margin-right: 1rem; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

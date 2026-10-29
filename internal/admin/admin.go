@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"hookd/internal/settings"
 	"hookd/internal/store"
 )
 
@@ -28,15 +29,28 @@ var staticFS embed.FS
 
 // Handler is the admin UI. Mount it for "/" and "/admin/…" (api.WithAdmin).
 type Handler struct {
-	store store.Store
-	log   *slog.Logger
-	pages map[string]*template.Template
-	root  http.Handler
+	store    store.Store
+	settings *settings.Manager
+	log      *slog.Logger
+	pages    map[string]*template.Template
+	root     http.Handler
+}
+
+// Option configures a Handler.
+type Option func(*Handler)
+
+// WithSettings serves the settings and health page, which shows and changes
+// the settings of m. Without it the page is not found.
+func WithSettings(m *settings.Manager) Option {
+	return func(h *Handler) { h.settings = m }
 }
 
 // New returns the admin UI on st, logging to log.
-func New(st store.Store, log *slog.Logger) *Handler {
+func New(st store.Store, log *slog.Logger, opts ...Option) *Handler {
 	h := &Handler{store: st, log: log, pages: parsePages()}
+	for _, o := range opts {
+		o(h)
+	}
 
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -53,6 +67,11 @@ func New(st store.Store, log *slog.Logger) *Handler {
 	mux.HandleFunc("POST /admin/accounts/{acct}/keys", h.createKey)
 	mux.HandleFunc("GET /admin/accounts/{acct}/keys/{key}/revoke", h.confirmRevokeKey)
 	mux.HandleFunc("POST /admin/accounts/{acct}/keys/{key}/revoke", h.revokeKey)
+	if h.settings != nil {
+		mux.HandleFunc("GET /admin/settings", h.showSettings)
+		mux.HandleFunc("POST /admin/settings/{name}", h.saveSetting)
+		mux.HandleFunc("POST /admin/settings/{name}/reset", h.resetSetting)
+	}
 	mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) { h.notFound(w, r) })
 
 	cop := http.NewCrossOriginProtection()

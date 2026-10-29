@@ -1,0 +1,68 @@
+{{define "content"}}
+{{if .LoadError}}
+<div class="error" role="alert">
+<p>The settings saved here are not in effect on this instance, because together with its environment they are invalid. It keeps its last valid configuration until they are fixed:</p>
+<ul>{{range .LoadError}}<li>{{.}}</li>{{end}}</ul>
+</div>
+{{end}}
+
+<section>
+<h2>Health</h2>
+<div class="scroll">
+<table>
+<tbody>
+<tr><th>Database</th><td id="health-database">{{if .Health.Reachable}}reachable{{else}}<span class="error">not reachable</span> {{.Health.PingError}}{{end}}</td></tr>
+<tr><th>Driver</th><td><code>{{.Health.DB.Driver}}</code></td></tr>
+{{if .Health.Postgres}}
+<tr><th>Host and port</th><td><code>{{.Health.DB.Host}}:{{.Health.DB.Port}}</code></td></tr>
+<tr><th>Database name</th><td><code>{{.Health.DB.Name}}</code></td></tr>
+{{else}}
+<tr><th>File</th><td><code>{{.Health.DB.Path}}</code></td></tr>
+{{end}}
+{{if .Health.Reachable}}
+<tr><th>Migrations</th><td id="health-migrations">{{if not .Health.PendingKnown}}could not be read{{else if .Health.Pending}}not applied: {{range $i, $v := .Health.Pending}}{{if $i}}, {{end}}<code>{{$v}}</code>{{end}}. Run <code>hookd migrate</code>.{{else}}up to date{{end}}</td></tr>
+{{if .Health.Counts}}
+<tr><th>Pending deliveries</th><td id="health-pending">{{index .Health.Counts "pending"}}</td></tr>
+<tr><th>Deliveries in progress</th><td id="health-in-progress">{{index .Health.Counts "in_progress"}}</td></tr>
+{{else}}
+<tr><th>Deliveries</th><td>could not be counted</td></tr>
+{{end}}
+{{end}}
+</tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>Settings</h2>
+<p class="hint">A value saved here overrides the environment variable and applies on every instance within a few seconds. Reset goes back to the environment or default value.</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Setting</th><th>Value</th><th>Source</th><th></th></tr></thead>
+<tbody>
+{{range .Settings}}
+<tr id="setting-{{.Name}}">
+<td><code>{{.Name}}</code></td>
+{{if .Editable}}
+<td>
+<form method="post" action="/admin/settings/{{.Name}}">
+{{range .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
+<label class="visually-hidden" for="value-{{.Name}}">Value of {{.Name}}</label>
+<input id="value-{{.Name}}" name="value" value="{{.Input}}" required>
+<button type="submit">Save</button>
+</form>
+</td>
+<td>{{.Source}}</td>
+<td>{{if eq .Source "UI"}}<form method="post" action="/admin/settings/{{.Name}}/reset"><button type="submit">Reset</button></form>{{end}}</td>
+{{else}}
+<td><code>{{.Value}}</code></td>
+<td>{{.Source}}</td>
+<td class="hint">set with environment variables</td>
+{{end}}
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+</section>
+{{end}}

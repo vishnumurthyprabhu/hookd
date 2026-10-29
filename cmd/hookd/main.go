@@ -172,7 +172,7 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 		api.WithWake(pool.Wake()),
 	}
 	if cfg.AdminUI {
-		opts = append(opts, api.WithAdmin(admin.New(s, log)))
+		opts = append(opts, api.WithAdmin(admin.New(s, log, admin.WithSettings(mgr))))
 	}
 	srv := api.New(s, log, opts...)
 	err = srv.Serve(ctx, ln)
