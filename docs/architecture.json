@@ -34,7 +34,7 @@
       "name": "HTTP API",
       "kind": "service",
       "group": "hookd binary",
-      "description": "Versioned /v1 JSON routes for endpoints, events and secrets on http.ServeMux, plus /healthz."
+      "description": "Versioned /v1 JSON routes for endpoints, events and secrets on http.ServeMux, plus /healthz; routes / and /admin to the admin UI when it is on."
     },
     {
       "id": "auth",
@@ -44,11 +44,39 @@
       "description": "Middleware that hashes the bearer key, resolves the account and scopes every request to it."
     },
     {
+      "id": "admin-ui",
+      "name": "Admin UI",
+      "kind": "ui",
+      "group": "hookd binary",
+      "description": "Server-rendered pages under /admin (HOOKD_ADMIN_UI) for accounts, API keys, endpoints, events and settings; no sign-in, cross-origin protected."
+    },
+    {
+      "id": "builtin-receiver",
+      "name": "Built-in test receiver",
+      "kind": "service",
+      "group": "hookd binary",
+      "description": "POST /admin/test-receiver/{id}: verifies deliveries to admin test endpoints and stores the requests in the database."
+    },
+    {
+      "id": "settings",
+      "name": "Settings manager",
+      "kind": "library",
+      "group": "hookd binary",
+      "description": "Effective run-time config: environment plus overrides from the settings table, reloaded every 5 s; owns the log level."
+    },
+    {
+      "id": "validate",
+      "name": "Input checks",
+      "kind": "library",
+      "group": "hookd binary",
+      "description": "URL, description, event type, idempotency key and payload checks shared by the API and the admin UI."
+    },
+    {
       "id": "delivery-workers",
       "name": "Delivery workers",
       "kind": "worker",
       "group": "hookd binary",
-      "description": "Goroutine pool, woken by the API or by polling, that claims deliveries, signs them and POSTs each once."
+      "description": "Goroutine pool, woken by the API, the admin UI or by polling, that claims deliveries, signs them and POSTs each once, with live settings."
     },
     {
       "id": "signer",
@@ -97,7 +125,7 @@
       "name": "PostgreSQL",
       "kind": "store",
       "group": "Database",
-      "description": "Production database holding accounts, API keys, endpoints, events and deliveries."
+      "description": "Production database holding accounts, API keys, endpoints, events, deliveries, settings and test receiver requests."
     },
     {
       "id": "test-receiver",
@@ -111,7 +139,14 @@
       "name": "Standard Webhooks Go library",
       "kind": "external",
       "group": "Dev tools",
-      "description": "Official verifier used only by tests and the test receiver to prove signatures are correct."
+      "description": "Official verifier used by tests, the test receiver and the built-in test receiver to prove signatures are correct."
+    },
+    {
+      "id": "aws-deploy",
+      "name": "AWS CDK stack",
+      "kind": "other",
+      "group": "Deployment",
+      "description": "CDK app that builds hookd on one EC2 box running hookd serve on SQLite behind nginx, with an Elastic IP and CloudWatch logs."
     }
   ],
   "links": [
@@ -151,6 +186,16 @@
       "label": "loads settings"
     },
     {
+      "from": "operator-cli",
+      "to": "settings",
+      "label": "starts (serve)"
+    },
+    {
+      "from": "operator-cli",
+      "to": "admin-ui",
+      "label": "mounts (HOOKD_ADMIN_UI)"
+    },
+    {
       "from": "api",
       "to": "auth",
       "label": "authenticates"
@@ -171,6 +216,71 @@
       "label": "wake signal"
     },
     {
+      "from": "api",
+      "to": "validate",
+      "label": "checks input"
+    },
+    {
+      "from": "api",
+      "to": "settings",
+      "label": "live payload limit"
+    },
+    {
+      "from": "api",
+      "to": "admin-ui",
+      "label": "routes / and /admin"
+    },
+    {
+      "from": "admin-ui",
+      "to": "store",
+      "label": "reads and writes"
+    },
+    {
+      "from": "admin-ui",
+      "to": "validate",
+      "label": "checks input"
+    },
+    {
+      "from": "admin-ui",
+      "to": "settings",
+      "label": "shows and saves settings"
+    },
+    {
+      "from": "admin-ui",
+      "to": "delivery-workers",
+      "label": "wake signal"
+    },
+    {
+      "from": "admin-ui",
+      "to": "builtin-receiver",
+      "label": "test endpoints"
+    },
+    {
+      "from": "builtin-receiver",
+      "to": "store",
+      "label": "stores requests"
+    },
+    {
+      "from": "builtin-receiver",
+      "to": "standard-webhooks-lib",
+      "label": "verifies with"
+    },
+    {
+      "from": "settings",
+      "to": "store",
+      "label": "reads overrides"
+    },
+    {
+      "from": "settings",
+      "to": "config",
+      "label": "checks with FromLookup"
+    },
+    {
+      "from": "delivery-workers",
+      "to": "settings",
+      "label": "live worker settings"
+    },
+    {
       "from": "delivery-workers",
       "to": "store",
       "label": "claims, records results"
@@ -189,6 +299,11 @@
       "from": "delivery-workers",
       "to": "test-receiver",
       "label": "POST (dev)"
+    },
+    {
+      "from": "delivery-workers",
+      "to": "builtin-receiver",
+      "label": "POST (test endpoints)"
     },
     {
       "from": "store",
@@ -229,10 +344,20 @@
       "from": "test-receiver",
       "to": "standard-webhooks-lib",
       "label": "verifies with"
+    },
+    {
+      "from": "aws-deploy",
+      "to": "reverse-proxy",
+      "label": "sets up nginx + Elastic IP"
+    },
+    {
+      "from": "aws-deploy",
+      "to": "operator-cli",
+      "label": "builds, runs hookd serve"
     }
   ],
   "meta": {
-    "commit": "a2e6af58e55011b0d8aa5fd8623257669503f524",
-    "drawnAt": "2026-10-29T07:23:42.828Z"
+    "commit": "b8aa672967f49b84534294ffeb135ae03f357d12",
+    "drawnAt": "2026-10-29T12:51:43.530Z"
   }
 }

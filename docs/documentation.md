@@ -1,4 +1,4 @@
-<!-- Synced by Software Factory from commit a2e6af58e55011b0d8aa5fd8623257669503f524, 2026-10-29T07:24:51.888Z. Do not edit this line. -->
+<!-- Synced by Software Factory from commit b8aa672967f49b84534294ffeb135ae03f357d12, 2026-10-29T12:53:01.612Z. Do not edit this line. -->
 # Hookd documentation
 
 ## Prerequisites
@@ -7,6 +7,7 @@
 - `git` and `curl`.
 - Nothing else locally: the SQLite driver is pure Go and the database is a local file.
 - For production: Linux hosts, PostgreSQL 13 or later on its own node, and a load balancer or reverse proxy that terminates TLS.
+- For the AWS deployment in `deploy/aws`: Node.js with npm, and an AWS account set up as a CLI profile (the CDK takes the account and region from it).
 
 ## Quick local start
 
@@ -34,6 +35,8 @@ Use three terminals, all in the repository folder.
    ```json
    {"status":"ok"}
    ```
+
+   Or open <http://localhost:8080/> in a browser: it leads to the admin UI at `/admin/`, where you can do the steps below without a shell. There, **New test endpoint** creates an endpoint that delivers to the receiver built into Hookd, so `cmd/testreceiver` isn't needed. `README.md` goes through it step by step.
 
 3. Create an account (terminal 2). Hookd prints an `account_id` and an `api_key`, and shows the key only once:
 
@@ -150,7 +153,10 @@ In production, one or more identical `hookd serve` processes run behind a load b
    HOOKD_DB_MAX_CONNS=10
    HOOKD_AUTO_MIGRATE=false
    HOOKD_LOG_FORMAT=json
+   HOOKD_ADMIN_UI=false
    ```
+
+   The admin UI has no sign-in, so `HOOKD_ADMIN_UI=false` turns it off. Leave it on only where `/admin` is restricted at the load balancer to the admins' network (step 7).
 
    To load the settings into a shell before running `hookd` commands, use `set -a; . /etc/hookd/hookd.env; set +a`.
 
@@ -188,20 +194,31 @@ In production, one or more identical `hookd serve` processes run behind a load b
    sudo journalctl -u hookd -f
    ```
 
-7. **Load balancer.** Hookd serves plain HTTP, so terminate TLS in front of it. Sticky sessions aren't needed. Keep the proxy's body size limit above `HOOKD_MAX_PAYLOAD_BYTES` plus a few KB (for nginx, `client_max_body_size 1m;`). Point the health check at `GET /healthz`, which answers `200` when the database is reachable and `503` when it isn't.
+7. **Load balancer.** Hookd serves plain HTTP, so terminate TLS in front of it. Sticky sessions aren't needed. Keep the proxy's body size limit above `HOOKD_MAX_PAYLOAD_BYTES` plus a few KB (for nginx, `client_max_body_size 1m;`). Point the health check at `GET /healthz`, which answers `200` when the database is reachable and `503` when it isn't. If the admin UI is on, let `/admin` through only from the admins' network, and keep `proxy_set_header Host $host` (the UI checks a form's `Origin` against `Host`).
 
 8. **Upgrade:**
    1. Build the new binary and copy it to each host.
-   2. Run `hookd migrate` once.
+   2. Run `hookd migrate` once. From the version without the admin UI, it applies `0002_admin`. Since the new version serves the UI by default, set `HOOKD_ADMIN_UI=false` or restrict `/admin` before restarting.
    3. Restart the instances one at a time with `sudo systemctl restart hookd`, checking `/healthz` after each.
 
 9. **Back up** the PostgreSQL database, for example with `pg_dump`. It holds all of Hookd's state, signing secrets included, so protect the backups as secrets.
 
-The full guide, with an nginx example and a `sslmode` table, is in `docs/deployment.md`.
+The full guide, with an nginx example, a `sslmode` table, and when to set `HOOKD_ADMIN_RECEIVER_URL` for the built-in test receiver, is in `docs/deployment.md`.
+
+### AWS test box (`deploy/aws`)
+
+`deploy/aws` is an AWS CDK app in TypeScript (stack `hookd`, set in `cdk.json`) that deploys Hookd to one EC2 instance:
+
+- One VPC with a single public subnet and no NAT gateway, and a `t3.small` Amazon Linux 2023 instance with an encrypted 20 GB volume and IMDSv2 only.
+- The repository is uploaded as a zip asset. At first boot the instance installs Go, builds `hookd` with `CGO_ENABLED=0`, and runs `hookd serve` under systemd as user `hookd`, on SQLite at `/data/hookd.db`, listening on `127.0.0.1:8080` with `HOOKD_AUTO_MIGRATE=true` and `HOOKD_LOG_FORMAT=json`.
+- nginx on the instance terminates HTTPS on 443 with a self-signed certificate, so call it with `curl -k`. Port 80 serves only `/healthz` and redirects everything else to HTTPS. An Elastic IP keeps the address when the instance is replaced, and new source replaces the instance.
+- Logs go to CloudWatch Logs. Operator commands run in a Session Manager shell on the instance, for example `sudo -u hookd bash -c 'set -a; . /etc/hookd/hookd.env; hookd account create --name NAME'`.
+
+The stack doesn't set `HOOKD_ADMIN_UI`, and nginx forwards every path on 443, so the admin UI is reachable from anywhere without a sign-in. Use this box only for testing.
 
 ### Settings
 
-All settings are environment variables. Each one has a default that works locally, and the operator commands need the same `HOOKD_DB_*` values as `serve`.
+All settings are environment variables. Each one has a default that works locally, and the operator commands need the same `HOOKD_DB_*` values as `serve`. Seven of them (`HOOKD_WORKERS`, `HOOKD_POLL_INTERVAL`, `HOOKD_DELIVERY_TIMEOUT`, `HOOKD_DELIVERY_LEASE`, `HOOKD_MAX_PAYLOAD_BYTES`, `HOOKD_IDEMPOTENCY_WINDOW`, `HOOKD_LOG_LEVEL`) can also be changed on the admin UI's Settings page. A saved value is stored in the database, overrides the environment on every instance within 5 seconds without a restart, and is used only by `serve`. **Reset** goes back to the environment or default value.
 
 | Variable | Default |
 |---|---|
@@ -221,6 +238,8 @@ All settings are environment variables. Each one has a default that works locall
 | `HOOKD_AUTO_MIGRATE` | `true` |
 | `HOOKD_LOG_LEVEL` (`debug`, `info`, `warn`, `error`) | `info` |
 | `HOOKD_LOG_FORMAT` (`text` or `json`) | `text` |
+| `HOOKD_ADMIN_UI` (serve the admin UI and built-in test receiver under `/admin`) | `true` |
+| `HOOKD_ADMIN_RECEIVER_URL` (base URL the workers use to reach the built-in test receiver) | empty (`http://127.0.0.1:8080` by default) |
 
 If a setting is invalid, Hookd names it and exits without doing anything. `docs/configuration.md` describes each setting.
 
@@ -229,7 +248,7 @@ If a setting is invalid, Hookd names it and exits without doing anything. `docs/
 ### Operator commands
 
 ```
-hookd serve                        Run the API server and delivery workers
+hookd serve                        Run the API server, the admin UI and the delivery workers
 hookd migrate                      Apply database migrations
 hookd account create --name NAME   Create an account and print its API key
 hookd apikey create --account ID   Create another API key for an account and print it
@@ -244,6 +263,16 @@ Hookd stores only a hash of each key, so a lost key can't be shown again. To rot
 3. Once they have switched, find the old key's ID with `apikey list` and revoke it with `apikey revoke`.
 
 A revoked key gets `401`.
+
+### Admin UI
+
+Open `http://<host>:8080/`, which leads to `/admin/`. Every page has a "No sign-in" notice.
+
+- **Accounts:** create an account. Its first API key is shown once, with a **Copy** button. An account's page lists its keys and has **Create API key** and **Revoke**.
+- **Endpoints:** create, edit, disable, enable and delete endpoints. **Show the signing secret** shows the secret on request.
+- **New test endpoint:** creates an endpoint at `/admin/test-receiver/trcv_...`, the built-in receiver. It checks each request's signature and answers with the **Answer status** you set (for example `500` to see failures). Its page lists the last 100 **Received requests**, with headers and body.
+- **Events:** **Send an event** with an event type, a JSON payload and an optional idempotency key. The event's page shows each delivery's status and refreshes itself every 2 seconds until all are finished.
+- **Settings:** a Health section (database, migrations, pending and in-progress deliveries) and every `HOOKD_*` setting with its source (`default`, `environment` or `UI`). The seven editable ones have **Save** and **Reset**.
 
 ### API
 

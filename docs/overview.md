@@ -1,4 +1,4 @@
-<!-- Synced by Software Factory from commit a2e6af58e55011b0d8aa5fd8623257669503f524, 2026-10-29T07:24:51.888Z. Do not edit this line. -->
+<!-- Synced by Software Factory from commit b8aa672967f49b84534294ffeb135ae03f357d12, 2026-10-29T12:53:01.611Z. Do not edit this line. -->
 # Hookd
 
 ## What it is
@@ -43,3 +43,4 @@ In this version each delivery is attempted once. Failures are recorded but not r
 - `github.com/oklog/ulid/v2` for prefixed IDs.
 - `github.com/standard-webhooks/standard-webhooks/libraries`, used by the built-in test receiver, the tests and `cmd/testreceiver` to verify signatures.
 - The admin UI uses Go's `html/template` and `embed`, with plain HTML forms and no JavaScript framework or build step.
+- AWS CDK in TypeScript (`deploy/aws`) for a single EC2 test box running Hookd on SQLite behind nginx.

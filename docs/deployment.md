@@ -1,4 +1,4 @@
-<!-- Synced by Software Factory from commit a2e6af58e55011b0d8aa5fd8623257669503f524, 2026-10-29T07:27:02.822Z. Do not edit this line. -->
+<!-- Synced by Software Factory from commit b8aa672967f49b84534294ffeb135ae03f357d12, 2026-10-29T12:53:40.214Z. Do not edit this line. -->
 # Deploy to production
 
 ## What it is
@@ -146,7 +146,7 @@ go run ./cmd/testreceiver --secret whsec_...
 
 Hookd reads its settings from environment variables. Every setting has a default that works locally, so `hookd serve` runs with none set. A variable that is unset or empty keeps its default. The settings apply to every command (`serve`, `migrate`, `account create`, `apikey create`, `apikey list`, `apikey revoke`), so the operator commands must be run with the same `HOOKD_DB_*` settings as `serve`.
 
-Seven settings, marked "Also in the UI" in the table below, can also be changed on the admin UI's Settings page while Hookd runs. A value saved there is stored in the database, overrides the environment variable on every instance, and reaches every instance within 5 seconds; **Reset** on that page goes back to the environment or default value. Only `serve` uses these saved values. Every other setting is environment-only and needs a restart to change. [Configuration](configuration.md#settings-changed-in-the-admin-ui) has the details.
+Seven settings, marked "Also in the UI" in the table below, can also be changed on the admin UI's Settings page while Hookd runs. A value saved there is stored in the database, overrides the environment variable on every instance, and reaches every instance within 5 seconds; **Reset** on that page goes back to the environment or default value. Only `serve` uses these saved values. Every other setting is environment-only and needs a restart to change. [Settings changed in the admin UI](#settings-changed-in-the-admin-ui) below has the details.
 
 Hookd checks every setting when it starts. If any is invalid it names each bad one and exits without doing anything:
 
@@ -236,7 +236,12 @@ Tables, created by the built-in migrations (`0001_init`, and `0002_admin` for th
    level=INFO msg=listening addr=[::]:8080
    ```
 
-4. Open <http://localhost:8080/> in a browser. It leads to the admin UI, where you can create an account and its API key, create a test endpoint that delivers to Hookd's built-in receiver, send an event, and watch its delivery and the request received. [Set up and run from scratch](../README.md#set-up-and-run-from-scratch) goes through it step by step.
+4. Open <http://localhost:8080/> in a browser. It leads to the admin UI, on the **Accounts** page:
+   - Under **New account**, enter `acme` and click **Create account**. Copy the API key (`hk_...`) it shows; it is shown only once. Click **Go to the account**.
+   - Click **Endpoints**, then **New test endpoint**. In **Event types**, enter `order.paid`, leave **Answer status** at `200`, and click **Create test endpoint**. Its URL is `http://127.0.0.1:8080/admin/test-receiver/trcv_...`, Hookd's built-in receiver.
+   - Go back to the account, click **Events**, then **Send an event**. Enter the event type `order.paid` and the payload `{"order_id": "1001", "amount": 4200}`, and click **Send event**.
+   - On the event's page, the delivery shows `pending` and then `succeeded` with HTTP status `200`. Click the endpoint's URL in the delivery row: under **Received requests** the request is listed as **signature verified**.
+   - **Settings** at the top of any page shows the database's health, pending deliveries and every setting with where its value comes from.
 
 5. Or use the API instead. Check that Hookd is up (terminal 2):
 
