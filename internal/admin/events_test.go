@@ -325,11 +325,11 @@ func TestEventPageRefreshesWhilePending(t *testing.T) {
 		claimed = append(claimed, d)
 	}
 	wantRefresh(true, "in progress")
-	if err := u.st.RecordDeliveryResult(ctx, claimed[0].ID, store.DeliveryResult{Status: store.DeliverySucceeded, ResponseStatus: 200}); err != nil {
+	if _, err := u.st.RecordAttempt(ctx, claimed[0].ID, store.AttemptResult{Number: 1, Outcome: store.AttemptSucceeded, ResponseStatus: 200}); err != nil {
 		t.Fatal(err)
 	}
 	wantRefresh(true, "one in progress")
-	if err := u.st.RecordDeliveryResult(ctx, claimed[1].ID, store.DeliveryResult{Status: store.DeliveryFailed, ResponseStatus: 500, Error: "endpoint answered 500"}); err != nil {
+	if _, err := u.st.RecordAttempt(ctx, claimed[1].ID, store.AttemptResult{Number: 1, Outcome: store.AttemptFailed, ResponseStatus: 500, Error: "endpoint answered 500"}); err != nil {
 		t.Fatal(err)
 	}
 	wantRefresh(false, "finished")

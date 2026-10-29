@@ -3,7 +3,9 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -234,7 +236,17 @@ func TestConcurrentClaimsOnPostgres(t *testing.T) {
 	}
 }
 
-func TestRecordDeliveryResult(t *testing.T) {
+// mustRecordAttempt records an attempt and fails the test if it cannot.
+func mustRecordAttempt(t *testing.T, s store.Store, deliveryID string, r store.AttemptResult) store.Attempt {
+	t.Helper()
+	a, err := s.RecordAttempt(context.Background(), deliveryID, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestRecordAttempt(t *testing.T) {
 	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
 		ctx := context.Background()
 		c := &clock{t: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
@@ -244,35 +256,157 @@ func TestRecordDeliveryResult(t *testing.T) {
 		ep2 := mustEndpoint(t, s, acct.ID, store.NewEndpoint{URL: "https://example.com/2"})
 		e, _ := mustEvent(t, s, acct.ID, store.NewEvent{EventType: "a", Payload: []byte(`{}`)})
 
-		results := map[string]store.DeliveryResult{
-			ep1.ID: {Status: store.DeliverySucceeded, ResponseStatus: 204, Latency: 42 * time.Millisecond, AttemptedAt: c.t},
-			ep2.ID: {Status: store.DeliveryFailed, Error: "connection refused", Latency: 3 * time.Millisecond},
+		started := c.t.Add(-time.Second)
+		results := map[string]store.AttemptResult{
+			ep1.ID: {Number: 1, Outcome: store.AttemptSucceeded, ResponseStatus: 204, Latency: 42*time.Millisecond + 300*time.Microsecond, StartedAt: started},
+			ep2.ID: {Number: 1, Outcome: store.AttemptFailed, Error: "connection refused", Latency: 3 * time.Millisecond},
 		}
+		got := map[string]store.Attempt{}
 		for range 2 {
 			d := mustClaim(t, s, time.Minute)
-			if err := s.RecordDeliveryResult(ctx, d.ID, results[d.EndpointID]); err != nil {
-				t.Fatal(err)
+			if d.Attempts != 0 {
+				t.Errorf("first claim: Attempts = %d, want 0", d.Attempts)
 			}
+			a := mustRecordAttempt(t, s, d.ID, results[d.EndpointID])
+			if a.DeliveryID != d.ID || a.EventID != e.ID || a.EndpointID != d.EndpointID || a.AccountID != acct.ID {
+				t.Errorf("attempt %+v does not match delivery %+v of account %s", a, d, acct.ID)
+			}
+			if !strings.HasPrefix(a.ID, "att_") {
+				t.Errorf("attempt ID = %q, want an att_ ID", a.ID)
+			}
+			got[d.EndpointID] = a
 		}
-		// Finished deliveries are not claimed again, even after the lease.
+		a1 := got[ep1.ID]
+		if a1.Number != 1 || a1.Outcome != store.AttemptSucceeded || a1.ResponseStatus != 204 ||
+			a1.Latency != 42*time.Millisecond || !a1.StartedAt.Equal(started) || a1.Error != "" {
+			t.Errorf("success attempt = %+v", a1)
+		}
+		a2 := got[ep2.ID]
+		if a2.Outcome != store.AttemptFailed || a2.Error != "connection refused" || a2.ResponseStatus != 0 || !a2.StartedAt.Equal(c.t) {
+			t.Errorf("failed attempt = %+v, want started at the store's time %v", a2, c.t)
+		}
+
+		// Final deliveries are not claimed again, even after the lease.
 		c.advance(time.Hour)
 		mustClaimNone(t, s, time.Minute)
 
-		got, err := s.GetEvent(ctx, acct.ID, e.ID)
+		ev, err := s.GetEvent(ctx, acct.ID, e.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
+		now := c.t.Add(-time.Hour)
 		want := []store.DeliveryStatus{
-			{EndpointID: ep1.ID, Status: store.DeliverySucceeded, ResponseStatus: 204},
-			{EndpointID: ep2.ID, Status: store.DeliveryFailed, Error: "connection refused"},
+			{EndpointID: ep1.ID, Status: store.DeliverySucceeded, ResponseStatus: 204, Attempts: 1, LastAttemptAt: &started},
+			{EndpointID: ep2.ID, Status: store.DeliveryFailed, Error: "connection refused", Attempts: 1, LastAttemptAt: &now},
 		}
-		if !reflect.DeepEqual(got.Deliveries, want) {
-			t.Fatalf("deliveries = %+v, want %+v", got.Deliveries, want)
+		if !reflect.DeepEqual(ev.Deliveries, want) {
+			t.Fatalf("deliveries = %+v, want %+v", ev.Deliveries, want)
 		}
 	})
 }
 
-func TestRecordDeliveryResultErrors(t *testing.T) {
+// TestRecordAttemptRetry follows one delivery through a failure with a next
+// attempt, the wait, and a second, final attempt.
+func TestRecordAttemptRetry(t *testing.T) {
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		c := &clock{t: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
+		s := db.New(t, store.WithClock(c.now))
+		acct := mustAccount(t, s)
+		ep := mustEndpoint(t, s, acct.ID, store.NewEndpoint{URL: "https://example.com/hook"})
+		e, _ := mustEvent(t, s, acct.ID, store.NewEvent{EventType: "a", Payload: []byte(`{}`)})
+		delivery := func() store.DeliveryStatus {
+			t.Helper()
+			ev, err := s.GetEvent(ctx, acct.ID, e.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return ev.Deliveries[0]
+		}
+
+		// A new delivery has no attempts and no next attempt to report.
+		if got, want := delivery(), (store.DeliveryStatus{EndpointID: ep.ID, Status: store.DeliveryPending}); !reflect.DeepEqual(got, want) {
+			t.Fatalf("new delivery = %+v, want %+v", got, want)
+		}
+
+		d := mustClaim(t, s, time.Minute)
+		first := c.t
+		next := c.t.Add(time.Hour)
+		mustRecordAttempt(t, s, d.ID, store.AttemptResult{
+			Number: 1, Outcome: store.AttemptFailed, ResponseStatus: 500, Error: "non-2xx response: 500 Internal Server Error",
+			StartedAt: first, NextAttemptAt: &next,
+		})
+		want := store.DeliveryStatus{
+			EndpointID: ep.ID, Status: store.DeliveryPending, ResponseStatus: 500, Error: "non-2xx response: 500 Internal Server Error",
+			Attempts: 1, LastAttemptAt: &first, NextAttemptAt: &next,
+		}
+		if got := delivery(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("waiting delivery = %+v, want %+v", got, want)
+		}
+		if n, err := s.CountWaitingRetries(ctx); err != nil || n != 1 {
+			t.Errorf("CountWaitingRetries = %d, %v, want 1", n, err)
+		}
+
+		// The same attempt cannot be recorded twice.
+		if _, err := s.RecordAttempt(ctx, d.ID, store.AttemptResult{Number: 1, Outcome: store.AttemptSucceeded}); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("second record of attempt 1: err = %v, want ErrNotFound", err)
+		}
+
+		// Not due yet, then due.
+		mustClaimNone(t, s, time.Minute)
+		c.advance(time.Hour - time.Microsecond)
+		mustClaimNone(t, s, time.Minute)
+		c.advance(time.Microsecond)
+		d = mustClaim(t, s, time.Minute)
+		if d.Attempts != 1 {
+			t.Fatalf("claimed retry with Attempts = %d, want 1", d.Attempts)
+		}
+		// A stale record of attempt 1 does not count as attempt 2.
+		if _, err := s.RecordAttempt(ctx, d.ID, store.AttemptResult{Number: 1, Outcome: store.AttemptSucceeded}); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("record of attempt 1 after the retry was claimed: err = %v, want ErrNotFound", err)
+		}
+		second := c.t
+		a := mustRecordAttempt(t, s, d.ID, store.AttemptResult{Number: 2, Outcome: store.AttemptSucceeded, ResponseStatus: 200, StartedAt: second})
+		if a.Number != 2 {
+			t.Errorf("attempt number = %d, want 2", a.Number)
+		}
+		want = store.DeliveryStatus{EndpointID: ep.ID, Status: store.DeliverySucceeded, ResponseStatus: 200, Attempts: 2, LastAttemptAt: &second}
+		if got := delivery(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("final delivery = %+v, want %+v", got, want)
+		}
+		if n, err := s.CountWaitingRetries(ctx); err != nil || n != 0 {
+			t.Errorf("CountWaitingRetries after success = %d, %v, want 0", n, err)
+		}
+		c.advance(time.Hour)
+		mustClaimNone(t, s, time.Minute)
+	})
+}
+
+// TestRecordAttemptAfterReclaim has two workers holding the same attempt
+// after a lease expired: only the first to record it is stored.
+func TestRecordAttemptAfterReclaim(t *testing.T) {
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		c := &clock{t: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
+		s := db.New(t, store.WithClock(c.now))
+		acct := mustAccount(t, s)
+		mustEndpoint(t, s, acct.ID, store.NewEndpoint{URL: "https://example.com/hook"})
+		mustEvent(t, s, acct.ID, store.NewEvent{EventType: "a", Payload: []byte(`{}`)})
+
+		slow := mustClaim(t, s, time.Minute)
+		c.advance(time.Minute + time.Microsecond)
+		fast := mustClaim(t, s, time.Minute)
+		if fast.ID != slow.ID || fast.Attempts != 0 {
+			t.Fatalf("reclaimed %+v, want %s with no attempts", fast, slow.ID)
+		}
+		mustRecordAttempt(t, s, fast.ID, store.AttemptResult{Number: fast.Attempts + 1, Outcome: store.AttemptSucceeded, ResponseStatus: 200})
+		if _, err := s.RecordAttempt(ctx, slow.ID, store.AttemptResult{Number: slow.Attempts + 1, Outcome: store.AttemptFailed, Error: "timeout"}); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("late record: err = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+func TestRecordAttemptErrors(t *testing.T) {
 	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
 		ctx := context.Background()
 		s := db.New(t)
@@ -280,21 +414,96 @@ func TestRecordDeliveryResultErrors(t *testing.T) {
 		mustEndpoint(t, s, acct.ID, store.NewEndpoint{URL: "https://example.com/hook"})
 		mustEvent(t, s, acct.ID, store.NewEvent{EventType: "a", Payload: []byte(`{}`)})
 
-		ok := store.DeliveryResult{Status: store.DeliverySucceeded, ResponseStatus: 200}
-		if err := s.RecordDeliveryResult(ctx, "dlv_missing", ok); !errors.Is(err, store.ErrNotFound) {
+		ok := store.AttemptResult{Number: 1, Outcome: store.AttemptSucceeded, ResponseStatus: 200}
+		if _, err := s.RecordAttempt(ctx, "dlv_missing", ok); !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("unknown delivery: err = %v, want ErrNotFound", err)
 		}
 		d := mustClaim(t, s, time.Minute)
-		if err := s.RecordDeliveryResult(ctx, d.ID, store.DeliveryResult{Status: store.DeliveryPending}); err == nil {
-			t.Error("recording a pending status succeeded")
+		later := time.Now().Add(time.Hour)
+		for name, r := range map[string]store.AttemptResult{
+			"pending outcome":         {Number: 1, Outcome: store.DeliveryPending},
+			"number 0":                {Number: 0, Outcome: store.AttemptSucceeded},
+			"success with next retry": {Number: 1, Outcome: store.AttemptSucceeded, NextAttemptAt: &later},
+		} {
+			if _, err := s.RecordAttempt(ctx, d.ID, r); err == nil || errors.Is(err, store.ErrNotFound) {
+				t.Errorf("%s: err = %v, want a validation error", name, err)
+			}
 		}
-		if err := s.RecordDeliveryResult(ctx, d.ID, ok); err != nil {
-			t.Fatal(err)
+		if _, err := s.RecordAttempt(ctx, d.ID, store.AttemptResult{Number: 2, Outcome: store.AttemptSucceeded}); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("number 2 for a first attempt: err = %v, want ErrNotFound", err)
 		}
+		mustRecordAttempt(t, s, d.ID, ok)
 		// A finished delivery is not in progress any more.
-		if err := s.RecordDeliveryResult(ctx, d.ID, ok); !errors.Is(err, store.ErrNotFound) {
-			t.Errorf("second result: err = %v, want ErrNotFound", err)
+		if _, err := s.RecordAttempt(ctx, d.ID, ok); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("second record: err = %v, want ErrNotFound", err)
 		}
+	})
+}
+
+// TestClaimDeliveryDueFirst checks that a retry and a new delivery are taken
+// in the order they came due, not the order they were created.
+func TestClaimDeliveryDueFirst(t *testing.T) {
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		c := &clock{t: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
+		s := db.New(t, store.WithClock(c.now))
+		acct := mustAccount(t, s)
+		mustEndpoint(t, s, acct.ID, store.NewEndpoint{URL: "https://example.com/hook"})
+
+		old, _ := mustEvent(t, s, acct.ID, store.NewEvent{EventType: "a", Payload: []byte(`{}`)})
+		d := mustClaim(t, s, time.Minute)
+		next := c.t.Add(10 * time.Second)
+		mustRecordAttempt(t, s, d.ID, store.AttemptResult{Number: 1, Outcome: store.AttemptFailed, Error: "boom", NextAttemptAt: &next})
+		c.advance(5 * time.Second)
+		newer, _ := mustEvent(t, s, acct.ID, store.NewEvent{EventType: "a", Payload: []byte(`{}`)})
+
+		c.advance(time.Minute)
+		if got := mustClaim(t, s, time.Minute); got.EventID != newer.ID || got.Attempts != 0 {
+			t.Errorf("first claim = %+v, want the new event %s", got, newer.ID)
+		}
+		if got := mustClaim(t, s, time.Minute); got.EventID != old.ID || got.Attempts != 1 {
+			t.Errorf("second claim = %+v, want the retry of %s", got, old.ID)
+		}
+	})
+}
+
+func TestCountWaitingRetries(t *testing.T) {
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		c := &clock{t: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
+		s := db.New(t, store.WithClock(c.now))
+		count := func(want int) {
+			t.Helper()
+			n, err := s.CountWaitingRetries(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != want {
+				t.Fatalf("CountWaitingRetries = %d, want %d", n, want)
+			}
+		}
+		count(0)
+
+		// Two accounts, five deliveries: two wait for a retry, one is new,
+		// one is final and one is in progress again on its retry.
+		a, _ := s.CreateAccount(ctx, "a")
+		b, _ := s.CreateAccount(ctx, "b")
+		mustEndpoint(t, s, a.ID, store.NewEndpoint{URL: "https://example.com/1"})
+		mustEndpoint(t, s, b.ID, store.NewEndpoint{URL: "https://example.com/2"})
+		for range 2 {
+			mustEvent(t, s, a.ID, store.NewEvent{EventType: "x", Payload: []byte(`{}`)})
+			mustEvent(t, s, b.ID, store.NewEvent{EventType: "x", Payload: []byte(`{}`)})
+		}
+		soon, later := c.t.Add(time.Second), c.t.Add(time.Hour)
+		for i, next := range []*time.Time{&soon, &later, &later, nil} {
+			d := mustClaim(t, s, time.Minute)
+			mustRecordAttempt(t, s, d.ID, store.AttemptResult{Number: 1, Outcome: store.AttemptFailed, Error: fmt.Sprint("boom ", i), NextAttemptAt: next})
+		}
+		count(3)
+		c.advance(time.Second)
+		mustClaim(t, s, time.Minute) // the retry due soon
+		count(2)
+		mustEvent(t, s, a.ID, store.NewEvent{EventType: "x", Payload: []byte(`{}`)})
+		count(2)
 	})
 }
 
@@ -379,14 +588,11 @@ func TestCountDeliveriesByStatus(t *testing.T) {
 		mustEvent(t, s, a.ID, store.NewEvent{EventType: "x", Payload: []byte(`{}`)})
 		mustEvent(t, s, b.ID, store.NewEvent{EventType: "x", Payload: []byte(`{}`)})
 
-		for _, r := range []store.DeliveryResult{
-			{Status: store.DeliverySucceeded, ResponseStatus: 200},
-			{Status: store.DeliveryFailed, Error: "boom"},
+		for _, r := range []store.AttemptResult{
+			{Number: 1, Outcome: store.AttemptSucceeded, ResponseStatus: 200},
+			{Number: 1, Outcome: store.AttemptFailed, Error: "boom"},
 		} {
-			d := mustClaim(t, s, time.Minute)
-			if err := s.RecordDeliveryResult(ctx, d.ID, r); err != nil {
-				t.Fatal(err)
-			}
+			mustRecordAttempt(t, s, mustClaim(t, s, time.Minute).ID, r)
 		}
 		mustClaim(t, s, time.Minute)
 

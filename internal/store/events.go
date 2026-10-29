@@ -255,7 +255,7 @@ func (s *SQLStore) getEvent(ctx context.Context, q queryer, accountID, id string
 	e.CreatedAt = created.Time
 
 	rows, err := s.query(ctx, q,
-		`SELECT endpoint_id, status, response_status, error FROM deliveries
+		`SELECT endpoint_id, status, response_status, error, attempts, attempted_at, next_attempt_at FROM deliveries
 		WHERE event_id = ?
 		ORDER BY endpoint_id`,
 		e.ID)
@@ -270,12 +270,22 @@ func (s *SQLStore) getEvent(ctx context.Context, q queryer, accountID, id string
 			d          DeliveryStatus
 			respStatus sql.NullInt64
 			errText    sql.NullString
+			attempted  dbTime
+			next       dbTime
 		)
-		if err := rows.Scan(&d.EndpointID, &d.Status, &respStatus, &errText); err != nil {
+		if err := rows.Scan(&d.EndpointID, &d.Status, &respStatus, &errText, &d.Attempts, &attempted, &next); err != nil {
 			return Event{}, fmt.Errorf("store: get event deliveries: %w", err)
 		}
 		d.ResponseStatus = int(respStatus.Int64)
 		d.Error = errText.String
+		if attempted.Valid {
+			d.LastAttemptAt = &attempted.Time
+		}
+		// next_attempt_at is kept once a delivery is final, and is the creation
+		// time of one not yet attempted: only a waiting retry reports it.
+		if d.Status == DeliveryPending && d.Attempts > 0 && next.Valid {
+			d.NextAttemptAt = &next.Time
+		}
 		e.Deliveries = append(e.Deliveries, d)
 	}
 	if err := rows.Err(); err != nil {

@@ -193,39 +193,41 @@ func (p *Pool) handle(ctx context.Context, d store.ClaimedDelivery) {
 	}
 
 	started := p.now()
-	var r store.DeliveryResult
+	var r store.AttemptResult
 	if job.EndpointDeleted || !job.Endpoint.Enabled {
-		r = store.DeliveryResult{Status: store.DeliveryFailed, Error: ErrEndpointDisabled}
+		r = store.AttemptResult{Outcome: store.AttemptFailed, Error: ErrEndpointDisabled}
 	} else {
 		r = p.send(ctx, job, started)
 	}
-	r.AttemptedAt = started
+	// No next attempt: the outcome is final, as nothing is retried yet.
+	r.Number = d.Attempts + 1
+	r.StartedAt = started
 	r.Latency = p.now().Sub(started)
 
 	rctx, cancel := context.WithTimeout(ctx, recordTimeout)
 	defer cancel()
-	if err := p.store.RecordDeliveryResult(rctx, d.ID, r); err != nil {
-		log.Error("record delivery result", "err", err)
+	if _, err := p.store.RecordAttempt(rctx, d.ID, r); err != nil {
+		log.Error("record attempt", "attempt", r.Number, "err", err)
 		return
 	}
-	log.Info("delivery "+r.Status,
+	log.Info("delivery "+r.Outcome, "attempt", r.Number,
 		"response_status", r.ResponseStatus, "error", r.Error, "latency_ms", r.Latency.Milliseconds())
 }
 
 // send signs the job's event and POSTs it once.
-func (p *Pool) send(ctx context.Context, job store.DeliveryJob, ts time.Time) store.DeliveryResult {
+func (p *Pool) send(ctx context.Context, job store.DeliveryJob, ts time.Time) store.AttemptResult {
 	header, err := signing.Sign(job.Secret, job.Event.ID, ts, job.Event.Payload)
 	if err != nil {
-		return store.DeliveryResult{Status: store.DeliveryFailed, Error: err.Error()}
+		return store.AttemptResult{Outcome: store.AttemptFailed, Error: err.Error()}
 	}
 	status, err := p.sender.Send(ctx, p.cfg().Timeout, job.Endpoint.URL, header, job.Event.Payload)
 	switch {
 	case err != nil:
-		return store.DeliveryResult{Status: store.DeliveryFailed, Error: err.Error()}
+		return store.AttemptResult{Outcome: store.AttemptFailed, Error: err.Error()}
 	case status >= 200 && status < 300:
-		return store.DeliveryResult{Status: store.DeliverySucceeded, ResponseStatus: status}
+		return store.AttemptResult{Outcome: store.AttemptSucceeded, ResponseStatus: status}
 	default:
-		return store.DeliveryResult{Status: store.DeliveryFailed, ResponseStatus: status, Error: statusError(status)}
+		return store.AttemptResult{Outcome: store.AttemptFailed, ResponseStatus: status, Error: statusError(status)}
 	}
 }
 

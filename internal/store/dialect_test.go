@@ -63,9 +63,12 @@ func TestSQLiteClaimQueryMatchesSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	var id, eventID, endpointID string
-	err = s.queryRow(ctx, s.db, s.d.claimDelivery, s.d.timeArg(now.Add(time.Minute)), s.d.timeArg(now)).
-		Scan(&id, &eventID, &endpointID)
+	var (
+		id, eventID, endpointID string
+		attempts                int
+	)
+	err = s.queryRow(ctx, s.db, s.d.claimDelivery, s.d.timeArg(now.Add(time.Minute)), s.d.timeArg(now), s.d.timeArg(now)).
+		Scan(&id, &eventID, &endpointID, &attempts)
 	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("claim on an empty queue: err = %v, want sql.ErrNoRows", err)
 	}

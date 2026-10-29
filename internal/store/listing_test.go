@@ -152,7 +152,7 @@ func TestListEvents(t *testing.T) {
 			if status == "" {
 				continue // stays in progress
 			}
-			if err := s.RecordDeliveryResult(ctx, d.ID, store.DeliveryResult{Status: status, ResponseStatus: 200}); err != nil {
+			if _, err := s.RecordAttempt(ctx, d.ID, store.AttemptResult{Number: 1, Outcome: status, ResponseStatus: 200}); err != nil {
 				t.Fatal(err)
 			}
 		}

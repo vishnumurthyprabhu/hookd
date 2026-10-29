@@ -16,8 +16,8 @@ func (s *SQLStore) ClaimDelivery(ctx context.Context, lease time.Duration) (Clai
 	}
 	now := s.nowUTC()
 	d := ClaimedDelivery{LockedUntil: now.Add(lease)}
-	err := s.queryRow(ctx, s.db, s.d.claimDelivery, s.d.timeArg(d.LockedUntil), s.d.timeArg(now)).
-		Scan(&d.ID, &d.EventID, &d.EndpointID)
+	err := s.queryRow(ctx, s.db, s.d.claimDelivery, s.d.timeArg(d.LockedUntil), s.d.timeArg(now), s.d.timeArg(now)).
+		Scan(&d.ID, &d.EventID, &d.EndpointID, &d.Attempts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ClaimedDelivery{}, false, nil
 	}
@@ -73,41 +73,6 @@ func (s *SQLStore) GetDeliveryJob(ctx context.Context, deliveryID string) (Deliv
 	return j, nil
 }
 
-// RecordDeliveryResult implements Store.
-func (s *SQLStore) RecordDeliveryResult(ctx context.Context, deliveryID string, r DeliveryResult) error {
-	if r.Status != DeliverySucceeded && r.Status != DeliveryFailed {
-		return fmt.Errorf("store: record delivery result: status %q is not final", r.Status)
-	}
-	attempted := r.AttemptedAt
-	if attempted.IsZero() {
-		attempted = s.nowUTC()
-	}
-	var respStatus, errText any // NULL when there is none
-	if r.ResponseStatus != 0 {
-		respStatus = r.ResponseStatus
-	}
-	if r.Error != "" {
-		errText = r.Error
-	}
-	res, err := s.exec(ctx, s.db,
-		`UPDATE deliveries
-		SET status = ?, response_status = ?, error = ?, latency_ms = ?, attempted_at = ?, locked_until = NULL
-		WHERE id = ? AND status = ?`,
-		r.Status, respStatus, errText, r.Latency.Milliseconds(), s.d.timeArg(attempted),
-		deliveryID, DeliveryInProgress)
-	if err != nil {
-		return fmt.Errorf("store: record delivery result: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("store: record delivery result: %w", err)
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
 // CountDeliveriesByStatus implements Store. The (status, locked_until) index
 // covers the query.
 func (s *SQLStore) CountDeliveriesByStatus(ctx context.Context) (map[string]int, error) {
@@ -136,4 +101,16 @@ func (s *SQLStore) CountDeliveriesByStatus(ctx context.Context) (map[string]int,
 		return nil, fmt.Errorf("store: count deliveries: %w", err)
 	}
 	return counts, nil
+}
+
+// CountWaitingRetries implements Store.
+func (s *SQLStore) CountWaitingRetries(ctx context.Context) (int, error) {
+	var n int
+	err := s.queryRow(ctx, s.db,
+		`SELECT count(*) FROM deliveries WHERE status = ? AND attempts > 0`,
+		DeliveryPending).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("store: count waiting retries: %w", err)
+	}
+	return n, nil
 }

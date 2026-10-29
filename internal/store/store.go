@@ -134,10 +134,11 @@ type Store interface {
 	// such events, including when the account does not exist.
 	ListEvents(ctx context.Context, accountID string, f EventFilter) ([]EventSummary, error)
 
-	// ClaimDelivery atomically takes the oldest delivery that is pending, or
-	// in progress with an expired lease, marks it in progress and locks it
-	// for lease. No other caller can claim it until the lease expires. ok is
-	// false when there is nothing to claim. lease must be positive.
+	// ClaimDelivery atomically takes the delivery that has been due longest:
+	// pending with its next attempt due, or in progress with an expired
+	// lease. It marks it in progress and locks it for lease. No other caller
+	// can claim it until the lease expires. ok is false when there is nothing
+	// to claim. lease must be positive.
 	ClaimDelivery(ctx context.Context, lease time.Duration) (d ClaimedDelivery, ok bool, err error)
 	// GetDeliveryJob loads what a worker needs to send a delivery: its event,
 	// its endpoint and the endpoint's signing secret. The endpoint is
@@ -145,15 +146,23 @@ type Store interface {
 	// created; see DeliveryJob.EndpointDeleted. It returns ErrNotFound if the
 	// delivery does not exist.
 	GetDeliveryJob(ctx context.Context, deliveryID string) (DeliveryJob, error)
-	// RecordDeliveryResult stores the outcome of an in-progress delivery and
-	// releases its lease. r.Status must be DeliverySucceeded or
-	// DeliveryFailed. It returns ErrNotFound if the delivery does not exist
-	// or is not in progress.
-	RecordDeliveryResult(ctx context.Context, deliveryID string, r DeliveryResult) error
+	// RecordAttempt stores one attempt of an in-progress delivery and, in the
+	// same transaction, its next step: the delivery takes the attempt's
+	// outcome as its final status, or goes back to pending until
+	// r.NextAttemptAt if that is set. Its lease is released. r.Number must be
+	// the delivery's attempts so far plus one; it returns ErrNotFound if the
+	// delivery does not exist, is not in progress or already has an attempt
+	// with that number. r.Outcome must be AttemptSucceeded or AttemptFailed,
+	// and only a failure can have a next attempt.
+	RecordAttempt(ctx context.Context, deliveryID string, r AttemptResult) (Attempt, error)
 	// CountDeliveriesByStatus returns the number of deliveries in each of
 	// the Delivery* states, across all accounts. Every state is in the map,
 	// with 0 if no delivery is in it.
 	CountDeliveriesByStatus(ctx context.Context) (map[string]int, error)
+	// CountWaitingRetries returns the number of deliveries, across all
+	// accounts, that are pending after at least one attempt: waiting for a
+	// retry.
+	CountWaitingRetries(ctx context.Context) (int, error)
 
 	// ListSettings returns the settings saved in the UI, ordered by name. It
 	// returns an empty slice if there are none.
@@ -370,6 +379,15 @@ type DeliveryStatus struct {
 	ResponseStatus int
 	// Error describes why the delivery failed, or is empty.
 	Error string
+	// Attempts is the number of attempts made so far.
+	Attempts int
+	// LastAttemptAt is when the last attempt started, or nil if none has
+	// been made.
+	LastAttemptAt *time.Time
+	// NextAttemptAt is when the next retry is due, or nil when none is
+	// waiting: it is set only while the delivery is pending after at least
+	// one attempt.
+	NextAttemptAt *time.Time
 }
 
 // ClaimedDelivery is a delivery taken by ClaimDelivery.
@@ -377,6 +395,9 @@ type ClaimedDelivery struct {
 	ID         string
 	EventID    string
 	EndpointID string
+	// Attempts is the number of attempts recorded before this claim, so
+	// this one is number Attempts + 1.
+	Attempts int
 	// LockedUntil is when the lease expires and the delivery can be claimed
 	// again.
 	LockedUntil time.Time
@@ -395,19 +416,49 @@ type DeliveryJob struct {
 	EndpointDeleted bool
 }
 
-// DeliveryResult is the outcome of one delivery attempt.
-type DeliveryResult struct {
-	// Status is DeliverySucceeded or DeliveryFailed.
-	Status string
+// Attempt outcomes.
+const (
+	AttemptSucceeded = "succeeded"
+	AttemptFailed    = "failed"
+)
+
+// AttemptResult is the outcome of one delivery attempt, and what comes next.
+type AttemptResult struct {
+	// Number is the attempt's number within the delivery: 1, 2, …
+	Number int
+	// Outcome is AttemptSucceeded or AttemptFailed.
+	Outcome string
 	// ResponseStatus is the endpoint's HTTP status, or 0 if there was none.
 	ResponseStatus int
-	// Error describes why the delivery failed, or is empty.
+	// Error describes why the attempt failed, or is empty.
 	Error string
 	// Latency is how long the attempt took.
 	Latency time.Duration
-	// AttemptedAt is when the attempt started. Zero means the store's
-	// current time.
-	AttemptedAt time.Time
+	// StartedAt is when the attempt started. Zero means the store's current
+	// time.
+	StartedAt time.Time
+	// NextAttemptAt is when the delivery is retried after a failure. Nil
+	// means the outcome is final.
+	NextAttemptAt *time.Time
+}
+
+// Attempt is one recorded attempt to send a delivery.
+type Attempt struct {
+	ID         string
+	AccountID  string
+	DeliveryID string
+	EventID    string
+	EndpointID string
+	Number     int
+	StartedAt  time.Time
+	// Outcome is AttemptSucceeded or AttemptFailed.
+	Outcome string
+	// ResponseStatus is the endpoint's HTTP status, or 0 if there was none.
+	ResponseStatus int
+	// Latency is how long the attempt took, in whole milliseconds.
+	Latency time.Duration
+	// Error describes why the attempt failed, or is empty.
+	Error string
 }
 
 // EndpointUpdate holds the fields to change on an endpoint. Nil fields are

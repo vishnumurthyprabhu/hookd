@@ -340,10 +340,10 @@ func TestGetEvent(t *testing.T) {
 	if m := byEndpoint(); m[ep1] != "pending" || m[ep2] != "pending" {
 		t.Errorf("in progress deliveries = %v, want pending", m)
 	}
-	if err := ts.st.RecordDeliveryResult(ctx, d1.ID, store.DeliveryResult{Status: store.DeliverySucceeded, ResponseStatus: 204}); err != nil {
+	if _, err := ts.st.RecordAttempt(ctx, d1.ID, store.AttemptResult{Number: 1, Outcome: store.AttemptSucceeded, ResponseStatus: 204}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ts.st.RecordDeliveryResult(ctx, d2.ID, store.DeliveryResult{Status: store.DeliveryFailed, ResponseStatus: 500, Error: "HTTP 500"}); err != nil {
+	if _, err := ts.st.RecordAttempt(ctx, d2.ID, store.AttemptResult{Number: 1, Outcome: store.AttemptFailed, ResponseStatus: 500, Error: "HTTP 500"}); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]string{d1.EndpointID: "succeeded 204", d2.EndpointID: "failed 500 HTTP 500"}

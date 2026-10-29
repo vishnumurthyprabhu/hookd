@@ -25,8 +25,9 @@ type dialect struct {
 	// transaction so that several instances do not migrate at once.
 	lockMigrations string
 	// claimDelivery atomically takes one delivery that is pending, or in
-	// progress with an expired lease, and marks it in progress. Its arguments
-	// are the new locked_until and the current time.
+	// progress with an expired lease, and marks it in progress. The one due
+	// longest goes first. Its arguments are the new locked_until and the
+	// current time, twice. It returns id, event_id, endpoint_id, attempts.
 	claimDelivery string
 	// lockRows is added to a SELECT to lock the rows it reads until the
 	// transaction ends. SQLite needs none: its transactions start as the one
@@ -59,11 +60,12 @@ var sqliteDialect = dialect{
 	claimDelivery: `UPDATE deliveries SET status = 'in_progress', locked_until = ?
 		WHERE id = (
 			SELECT id FROM deliveries
-			WHERE status = 'pending' OR (status = 'in_progress' AND locked_until < ?)
-			ORDER BY created_at, id
+			WHERE (status = 'pending' AND next_attempt_at <= ?)
+				OR (status = 'in_progress' AND locked_until < ?)
+			ORDER BY next_attempt_at, id
 			LIMIT 1
 		)
-		RETURNING id, event_id, endpoint_id`,
+		RETURNING id, event_id, endpoint_id, attempts`,
 	timesAsText: true,
 }
 
@@ -84,12 +86,13 @@ var postgresDialect = dialect{
 	claimDelivery: `UPDATE deliveries SET status = 'in_progress', locked_until = ?
 		WHERE id = (
 			SELECT id FROM deliveries
-			WHERE status = 'pending' OR (status = 'in_progress' AND locked_until < ?)
-			ORDER BY created_at, id
+			WHERE (status = 'pending' AND next_attempt_at <= ?)
+				OR (status = 'in_progress' AND locked_until < ?)
+			ORDER BY next_attempt_at, id
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED
 		)
-		RETURNING id, event_id, endpoint_id`,
+		RETURNING id, event_id, endpoint_id, attempts`,
 	lockRows:             " FOR UPDATE",
 	numberedPlaceholders: true,
 }
