@@ -308,7 +308,8 @@ func TestEndpointSecretPage(t *testing.T) {
 	ep, secret := u.newEndpoint(acct.ID, store.NewEndpoint{URL: "https://example.com/a", EventTypes: []string{"order.paid"}})
 	path := "/admin/accounts/" + acct.ID + "/endpoints/" + ep.ID
 
-	body := wantPage(t, u.get(path+"/secret"), http.StatusOK)
+	// html/template writes "+" as "&#43;", which base64 secrets may contain.
+	body := html.UnescapeString(wantPage(t, u.get(path+"/secret"), http.StatusOK))
 	if !strings.Contains(body, `<code id="endpoint-secret">`+secret+`</code>`) || !strings.Contains(body, `data-copy="endpoint-secret"`) {
 		t.Fatalf("secret page lacks the secret or its copy button: %q", body)
 	}
@@ -328,7 +329,7 @@ func TestEndpointSecretPage(t *testing.T) {
 		"bad create": wantPage(t, u.post("/admin/accounts/"+acct.ID+"/endpoints/new", url.Values{"url": {"nope"}}), http.StatusUnprocessableEntity),
 	}
 	for name, page := range pages {
-		if strings.Contains(page, secret) || strings.Contains(page, "whsec_") {
+		if strings.Contains(html.UnescapeString(page), secret) || strings.Contains(page, "whsec_") {
 			t.Fatalf("the %s page shows the secret", name)
 		}
 	}
@@ -408,7 +409,7 @@ func TestOtherAccountsEndpointNotFound(t *testing.T) {
 		"/admin/accounts/" + acme.ID + "/endpoints/ep_nope",
 	} {
 		for _, p := range []string{base, base + "/delete", base + "/secret"} {
-			body := wantPage(t, u.get(p), http.StatusNotFound)
+			body := html.UnescapeString(wantPage(t, u.get(p), http.StatusNotFound))
 			if strings.Contains(body, secret) || strings.Contains(body, "other.example.com") {
 				t.Fatalf("GET %s shows the other account's endpoint", p)
 			}
