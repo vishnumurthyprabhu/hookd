@@ -15,6 +15,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"hookd/internal/admin"
 	"hookd/internal/api"
 	"hookd/internal/config"
 	"hookd/internal/delivery"
@@ -166,9 +167,14 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 		pool.Run(workersCtx)
 	}()
 
-	srv := api.New(s, log,
+	opts := []api.Option{
 		api.WithMaxPayloadBytesFunc(func() int64 { return mgr.Current().MaxPayloadBytes }),
-		api.WithWake(pool.Wake()))
+		api.WithWake(pool.Wake()),
+	}
+	if cfg.AdminUI {
+		opts = append(opts, api.WithAdmin(admin.New(s, log)))
+	}
+	srv := api.New(s, log, opts...)
 	err = srv.Serve(ctx, ln)
 	// Workers finish the deliveries they are sending before they stop.
 	stopWorkers()

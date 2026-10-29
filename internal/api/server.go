@@ -32,6 +32,7 @@ type Server struct {
 	mux             *http.ServeMux
 	maxPayloadBytes func() int64
 	wake            chan<- struct{}
+	admin           http.Handler
 }
 
 // Option changes how New sets up a Server.
@@ -56,6 +57,13 @@ func WithMaxPayloadBytesFunc(max func() int64) Option {
 // wakes the workers.
 func WithWake(wake chan<- struct{}) Option {
 	return func(s *Server) { s.wake = wake }
+}
+
+// WithAdmin serves the admin UI with h: "/" and every path under "/admin"
+// go to h, inside the same request logging and panic recovery as the API.
+// Without it those paths answer the JSON 404 like any unknown path.
+func WithAdmin(h http.Handler) Option {
+	return func(s *Server) { s.admin = h }
 }
 
 // New returns a Server that keeps its state in st and logs to log.
@@ -88,7 +96,16 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.authenticate(http.HandlerFunc(s.dispatch)).ServeHTTP(w, r)
 		return
 	}
+	if s.admin != nil && isAdminPath(r.URL.Path) {
+		s.admin.ServeHTTP(w, r)
+		return
+	}
 	s.dispatch(w, r)
+}
+
+// isAdminPath reports whether path belongs to the admin UI.
+func isAdminPath(path string) bool {
+	return path == "/" || path == "/admin" || strings.HasPrefix(path, "/admin/")
 }
 
 // dispatch serves r with the mux, answering in JSON when no route matches.

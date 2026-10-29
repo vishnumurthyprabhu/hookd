@@ -1,0 +1,31 @@
+{{define "content"}}
+<section>
+<h2>New account</h2>
+<form method="post" action="/admin/accounts">
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+<label for="name">Name</label>
+<input id="name" name="name" value="{{.Name}}" required>
+<button type="submit">Create account</button>
+<p class="hint">The account's first API key is created with it and shown once.</p>
+</form>
+</section>
+
+<section>
+<h2>All accounts</h2>
+{{if .Accounts}}
+<div class="scroll">
+<table>
+<thead><tr><th>Name</th><th>ID</th><th>Created</th><th>Endpoints</th><th>API keys</th></tr></thead>
+<tbody>
+{{range .Accounts}}
+<tr><td>{{.Name}}</td><td><code>{{.ID}}</code></td><td>{{time .CreatedAt}}</td><td>{{.Endpoints}}</td><td>{{.APIKeys}}</td></tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{else}}
+<p>{{if .Paged}}No more accounts.{{else}}No accounts yet. Create one above.{{end}}</p>
+{{end}}
+<p class="pager">{{if .Paged}}<a href="/admin/">First page</a>{{end}} {{if .Next}}<a href="/admin/?after={{.Next}}">Next page</a>{{end}}</p>
+</section>
+{{end}}

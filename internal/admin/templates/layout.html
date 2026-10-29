@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · Hookd admin</title>
+<link rel="stylesheet" href="/admin/static/style.css">
+<script src="/admin/static/copy.js" defer></script>
+</head>
+<body>
+<header>
+<p class="notice" role="note"><strong>No sign-in.</strong> Anyone who can open this admin UI can use every page. Keep it reachable only by trusted people, or turn it off with <code>HOOKD_ADMIN_UI=false</code>.</p>
+<nav><a href="/admin/" class="brand">Hookd admin</a> <a href="/admin/">Accounts</a></nav>
+</header>
+<main>
+<h1>{{.Title}}</h1>
+{{template "content" .Data}}
+</main>
+</body>
+</html>

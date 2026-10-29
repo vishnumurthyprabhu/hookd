@@ -393,3 +393,40 @@ func TestServeAppliesSavedSettings(t *testing.T) {
 		t.Fatalf("POST /v1/events with a 208-byte payload: status %d, want 413 from the saved limit of 100", status)
 	}
 }
+
+func TestServeAdminUI(t *testing.T) {
+	for _, tc := range []struct {
+		env    string
+		status int
+		ctype  string
+	}{
+		{"", http.StatusOK, "text/html"},
+		{"false", http.StatusNotFound, "application/json"},
+	} {
+		t.Run("HOOKD_ADMIN_UI="+tc.env, func(t *testing.T) {
+			useTempDB(t)
+			if tc.env != "" {
+				t.Setenv("HOOKD_ADMIN_UI", tc.env)
+			}
+			runOK(t, "migrate")
+			c := apiClient{t: t, key: createAccount(t, "acme")}
+			c.base = startServe(t)
+
+			resp, err := http.Get(c.base + "/admin/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != tc.status || !strings.HasPrefix(resp.Header.Get("Content-Type"), tc.ctype) {
+				t.Fatalf("GET /admin/: status %d, Content-Type %q, want %d and %s",
+					resp.StatusCode, resp.Header.Get("Content-Type"), tc.status, tc.ctype)
+			}
+			if status := c.do("GET", "/healthz", nil, nil); status != http.StatusOK {
+				t.Fatalf("GET /healthz: status %d", status)
+			}
+			if status := c.do("GET", "/v1/endpoints", nil, nil); status != http.StatusOK {
+				t.Fatalf("GET /v1/endpoints: status %d", status)
+			}
+		})
+	}
+}
