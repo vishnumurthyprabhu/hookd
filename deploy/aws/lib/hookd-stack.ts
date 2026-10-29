@@ -1,16 +1,25 @@
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { Aws, Duration, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
-import * as ecrAssets from 'aws-cdk-lib/aws-ecr-assets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
 import { NagSuppressions } from 'cdk-nag';
 import { Construct } from 'constructs';
 import { address, component, purpose } from './beadsurf';
 
-const repoRoot = join(__dirname, '..', '..', '..');
+// The hookd repository: the nearest folder above this app with hookd's go.mod. The app itself may sit
+// at a different depth (deploy/aws, or a working copy under .surface), so the depth is not fixed.
+function findRepoRoot(): string {
+  for (let dir = __dirname; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, 'go.mod')) && existsSync(join(dir, 'cmd', 'hookd'))) return dir;
+    if (dirname(dir) === dir) throw new Error(`No hookd repository (go.mod and cmd/hookd) above ${__dirname}`);
+  }
+}
+const repoRoot = findRepoRoot();
 // Written out, not a token, so cdk-nag can see the instance only accepts traffic from inside the VPC.
 const vpcCidr = '10.0.0.0/16';
 
@@ -38,16 +47,16 @@ export class HookdStack extends Stack {
       ),
     });
 
-    // hookd serve: one container on one instance; SQLite lives on its encrypted root volume.
+    // hookd serve: one systemd service on one instance; SQLite lives on its encrypted root volume.
+    // The source goes up as a zip (no Docker needed to deploy) and the box builds the binary at boot.
     const app = new Construct(this, 'Serve');
     component(app, 'hookd serve');
     purpose(app, 'The hookd serve process: HTTP API on 8080 and delivery workers');
 
-    const image = new ecrAssets.DockerImageAsset(app, 'Image', {
-      directory: repoRoot,
-      file: 'deploy/aws/lib/Dockerfile',
-      platform: ecrAssets.Platform.LINUX_AMD64,
-      exclude: ['.git', 'node_modules', '.surface', 'deploy/aws/cdk.out*'],
+    const source = new s3assets.Asset(app, 'Source', {
+      path: repoRoot,
+      // cdk.out anywhere: the asset is staged into it, so including it would copy the asset into itself.
+      exclude: ['.git', 'node_modules', '.surface', '.beads', 'cdk.out*', '**/cdk.out*', '*.db', '*.db-wal', '*.db-shm'],
     });
 
     const logGroup = new logs.LogGroup(app, 'Logs', {
@@ -57,10 +66,11 @@ export class HookdStack extends Stack {
 
     const role = new iam.Role(app, 'InstanceRole', {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
-      description: 'hookd instance: pull its image, write its logs, signal CloudFormation',
+      description: 'hookd instance: read its source, write its logs, signal CloudFormation',
     });
-    image.repository.grantPull(role);
+    source.grantRead(role);
     logGroup.grantWrite(role);
+    role.addToPolicy(new iam.PolicyStatement({ actions: ['logs:DescribeLogStreams'], resources: [logGroup.logGroupArn] }));
     role.addToPolicy(
       new iam.PolicyStatement({ actions: ['cloudformation:SignalResource'], resources: [Aws.STACK_ID] }),
     );
@@ -81,11 +91,12 @@ export class HookdStack extends Stack {
       role,
       securityGroup: sg,
       userData,
-      // A new image replaces the box, so the new user data runs.
+      // New source replaces the box, so the new user data runs.
       userDataCausesReplacement: true,
-      resourceSignalTimeout: Duration.minutes(15),
-      // IMDSv2 with hop limit 1: the container cannot reach instance metadata, even through a
-      // webhook endpoint URL that points at 169.254.169.254.
+      // The first boot downloads the Go toolchain and modules and builds hookd.
+      resourceSignalTimeout: Duration.minutes(25),
+      // IMDSv2 only; the service also has IPAddressDeny for 169.254.169.254, so a webhook
+      // endpoint URL that points at instance metadata gets nothing.
       httpEndpoint: true,
       httpTokens: ec2.HttpTokens.REQUIRED,
       httpPutResponseHopLimit: 1,
@@ -98,19 +109,25 @@ export class HookdStack extends Stack {
     });
     const instanceLogicalId = (instance.node.defaultChild as ec2.CfnInstance).logicalId;
 
-    const registry = `${this.account}.dkr.ecr.${this.region}.${this.urlSuffix}`;
     userData.addCommands(
       'set -euo pipefail',
       'TOKEN=$(curl -sfX PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 300")',
       'INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)',
       `signal() { aws cloudformation signal-resource --region ${this.region} --stack-name ${this.stackName} --logical-resource-id ${instanceLogicalId} --unique-id "$INSTANCE_ID" --status "$1" || true; }`,
       "trap 'signal FAILURE' ERR",
-      'mkdir -p /data',
-      'chown 65532:65532 /data',
-      'dnf install -y docker',
-      'systemctl enable --now docker',
-      `aws ecr get-login-password --region ${this.region} | docker login --username AWS --password-stdin ${registry}`,
-      `docker pull ${image.imageUri}`,
+      'dnf install -y golang unzip amazon-cloudwatch-agent',
+      // Build hookd from the source zip. The distro Go fetches the Go 1.26 toolchain go.mod asks for,
+      // checked against the Go checksum database.
+      `aws s3 cp --region ${this.region} ${source.s3ObjectUrl} /tmp/hookd-src.zip`,
+      'rm -rf /opt/hookd-src && mkdir -p /opt/hookd-src',
+      'unzip -q /tmp/hookd-src.zip -d /opt/hookd-src',
+      'export HOME=/root GOPATH=/root/go GOCACHE=/root/.cache/go-build GOTOOLCHAIN=go1.26.0+auto GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org CGO_ENABLED=0',
+      'cd /opt/hookd-src',
+      'go build -trimpath -ldflags="-s -w" -o /usr/local/bin/hookd ./cmd/hookd',
+      'cd /',
+      'useradd --system --no-create-home --shell /sbin/nologin hookd || true',
+      'mkdir -p /data /var/log/hookd',
+      'chown hookd:hookd /data',
       'mkdir -p /etc/hookd',
       'cat > /etc/hookd/hookd.env <<EOF',
       'HOOKD_DB_DRIVER=sqlite',
@@ -118,22 +135,34 @@ export class HookdStack extends Stack {
       'HOOKD_AUTO_MIGRATE=true',
       'HOOKD_LOG_FORMAT=json',
       'EOF',
-      'chmod 600 /etc/hookd/hookd.env',
+      'chown root:hookd /etc/hookd/hookd.env',
+      'chmod 640 /etc/hookd/hookd.env',
       'cat > /etc/systemd/system/hookd.service <<EOF',
       '[Unit]',
       'Description=Hookd webhook delivery',
-      'After=docker.service',
-      'Requires=docker.service',
+      'After=network-online.target',
+      'Wants=network-online.target',
       '[Service]',
+      'User=hookd',
+      'Group=hookd',
+      'EnvironmentFile=/etc/hookd/hookd.env',
+      'ExecStart=/usr/local/bin/hookd serve',
+      'StandardOutput=append:/var/log/hookd/hookd.log',
+      'StandardError=append:/var/log/hookd/hookd.log',
       'Restart=always',
       'RestartSec=2',
-      'ExecStartPre=-/usr/bin/docker rm -f hookd',
-      `ExecStart=/usr/bin/docker run --name hookd -p 8080:8080 -v /data:/data --env-file /etc/hookd/hookd.env --log-driver awslogs --log-opt awslogs-region=${this.region} --log-opt awslogs-group=${logGroup.logGroupName} --log-opt awslogs-stream=hookd-$INSTANCE_ID ${image.imageUri}`,
-      'ExecStop=/usr/bin/docker stop -t 30 hookd',
-      'TimeoutStopSec=45',
+      'KillSignal=SIGTERM',
+      'TimeoutStopSec=30',
+      'NoNewPrivileges=yes',
+      'IPAddressDeny=169.254.169.254',
       '[Install]',
       'WantedBy=multi-user.target',
       'EOF',
+      // Ship hookd's log file to CloudWatch, one stream per instance.
+      "cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'EOF'",
+      `{"logs":{"logs_collected":{"files":{"collect_list":[{"file_path":"/var/log/hookd/hookd.log","log_group_name":"${logGroup.logGroupName}","log_stream_name":"hookd-{instance_id}"}]}}}}`,
+      'EOF',
+      '/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json',
       'systemctl daemon-reload',
       'systemctl enable --now hookd',
       'for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/healthz && break; sleep 5; done',
@@ -142,7 +171,7 @@ export class HookdStack extends Stack {
     );
 
     // Operator commands: a shell on the box through Session Manager, then
-    // `sudo docker exec hookd hookd account create --name NAME` and the like.
+    // `sudo -u hookd bash -c 'set -a; . /etc/hookd/hookd.env; hookd account create --name NAME'` and the like.
     const operator = new Construct(this, 'Operator');
     component(operator, 'hookd operator commands');
     purpose(operator, 'Session Manager access to the box, to run hookd account and apikey commands');
@@ -197,7 +226,12 @@ export class HookdStack extends Stack {
     // cdk-nag findings that are accepted, each with its reason.
     NagSuppressions.addResourceSuppressions(
       role,
-      [{ id: 'AwsSolutions-IAM5', reason: 'ecr:GetAuthorizationToken does not support resource-level permissions.' }],
+      [
+        {
+          id: 'AwsSolutions-IAM5',
+          reason: 'CDK asset read grants use s3:GetObject*/List* on the asset bucket; the source zip key is content-hashed.',
+        },
+      ],
       true,
     );
     NagSuppressions.addResourceSuppressions(ssmPolicy, [
