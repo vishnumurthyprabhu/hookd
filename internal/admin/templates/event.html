@@ -1,4 +1,4 @@
-{{define "head"}}{{if .Active}}<meta http-equiv="refresh" content="{{.RefreshSeconds}}; url={{.Path}}">{{end}}{{end}}
+{{define "head"}}{{if .Active}}<meta http-equiv="refresh" content="{{.RefreshSeconds}}; url={{.RefreshURL}}">{{end}}{{end}}
 {{define "content"}}
 {{if eq .Sent "created"}}<p class="success" role="status">Event sent. Its deliveries are shown below.</p>{{end}}
 {{if eq .Sent "existing"}}<p class="warning" role="status">Existing event returned: an event with this idempotency key was sent recently, so nothing new was sent.</p>{{end}}
@@ -17,12 +17,13 @@
 {{if .Deliveries}}
 <div class="scroll">
 <table>
-<thead><tr><th>Endpoint</th><th>Status</th><th>HTTP status</th><th>Error</th></tr></thead>
+<thead><tr><th>Endpoint</th><th>Status</th><th>Attempts</th><th>HTTP status</th><th>Error</th></tr></thead>
 <tbody>
 {{range .Deliveries}}
 <tr id="delivery-{{.EndpointID}}">
 <td>{{if .URL}}<a href="/admin/accounts/{{$.Account.ID}}/endpoints/{{.EndpointID}}"><code>{{.URL}}</code></a>{{else}}<code>{{.EndpointID}}</code> (deleted){{end}}</td>
-<td class="status">{{.State}}</td>
+<td class="status">{{.State}}{{if .NextAttemptAt}}, next retry at {{time .NextAttemptAt}}{{end}}</td>
+<td class="attempts">{{.Attempts}}</td>
 <td>{{if .ResponseStatus}}{{.ResponseStatus}}{{else}}–{{end}}</td>
 <td>{{.Error}}</td>
 </tr>
@@ -34,6 +35,38 @@
 <p>No endpoint of this account received this event: none was enabled and subscribed to its type when it was sent.</p>
 {{end}}
 </section>
+
+{{if .Deliveries}}
+<section id="attempts">
+<h2>Attempts</h2>
+{{if .After}}<p class="hint">Later attempts, after those on the first page.</p>{{end}}
+{{range .Deliveries}}
+<h3>To {{if .URL}}<code>{{.URL}}</code>{{else}}<code>{{.EndpointID}}</code> (deleted){{end}}</h3>
+{{if .AttemptList}}
+<div class="scroll">
+<table id="attempts-{{.EndpointID}}">
+<thead><tr><th>Attempt</th><th>Started</th><th>Outcome</th><th>HTTP status</th><th>Latency</th><th>Error</th></tr></thead>
+<tbody>
+{{range .AttemptList}}
+<tr id="attempt-{{.ID}}">
+<td>{{.Number}}</td>
+<td>{{time .StartedAt}}</td>
+<td class="{{if eq .Outcome "succeeded"}}ok{{else}}failed{{end}}">{{.Outcome}}</td>
+<td>{{if .ResponseStatus}}{{.ResponseStatus}}{{else}}–{{end}}</td>
+<td>{{.Latency}}</td>
+<td>{{.Error}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{else}}
+<p>{{if $.After}}No more attempts.{{else}}No attempts yet.{{end}}</p>
+{{end}}
+{{end}}
+<p class="pager">{{if .After}}<a href="{{.Path}}#attempts">First attempts</a>{{end}} {{if .AttemptsNext}}<a href="{{.Path}}?after={{.AttemptsNext}}#attempts">More attempts</a>{{end}}</p>
+</section>
+{{end}}
 
 <section>
 <h2>Payload</h2>

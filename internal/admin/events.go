@@ -178,14 +178,23 @@ type eventData struct {
 	// Payload is the payload, indented if it is valid JSON.
 	Payload    string
 	Deliveries []deliveryRow
-	// Active is true while any delivery is pending or being sent, so the
-	// page refreshes itself.
+	// Active is true while any delivery is not final, so the page refreshes
+	// itself.
 	Active bool
 	// Sent is "created" right after the event was sent from the form, and
 	// "existing" when the form's idempotency key returned an earlier event.
 	Sent string
 	// RefreshSeconds is how often the page refreshes while Active.
 	RefreshSeconds int
+	// RefreshURL is where the page refreshes to: Path, on the same page of
+	// attempts.
+	RefreshURL string
+	// After is the ?after= cursor of this page of attempts, or empty on the
+	// first page.
+	After string
+	// AttemptsNext is the cursor of the next page of attempts, or empty on
+	// the last page.
+	AttemptsNext string
 }
 
 // deliveryRow is the delivery of the event to one endpoint.
@@ -195,15 +204,45 @@ type deliveryRow struct {
 	URL string
 	// State is the status in words.
 	State string
+	// AttemptList is the delivery's attempts on this page, oldest first.
+	AttemptList []store.Attempt
 }
 
-// refreshInterval is how often an event page with deliveries still to be
-// sent refreshes itself (R16).
-const refreshInterval = 2 * time.Second
+const (
+	// refreshInterval is how often an event page refreshes itself while a
+	// delivery is pending for its first attempt or being sent, or a retry
+	// is due within refreshSoon (R15).
+	refreshInterval = 2 * time.Second
+	// refreshSoon is how close a retry must be due for the page to refresh
+	// every refreshInterval.
+	refreshSoon = 10 * time.Second
+	// refreshWaiting is how often the page refreshes while every delivery
+	// not final waits for a retry further off than refreshSoon.
+	refreshWaiting = 30 * time.Second
+	// eventAttemptsPage is the most attempts an event page shows.
+	eventAttemptsPage = 200
+)
+
+// eventRefresh is how often the event page with these deliveries refreshes
+// itself, or 0 once every delivery is final (R15).
+func eventRefresh(deliveries []store.DeliveryStatus, now time.Time) time.Duration {
+	var every time.Duration
+	for _, d := range deliveries {
+		switch {
+		case d.Status == store.DeliveryInProgress,
+			d.Status == store.DeliveryPending && (d.NextAttemptAt == nil || d.NextAttemptAt.Sub(now) <= refreshSoon):
+			return refreshInterval
+		case d.Status == store.DeliveryPending:
+			every = refreshWaiting
+		}
+	}
+	return every
+}
 
 // showEvent shows an event with its payload and its delivery to each target
-// endpoint (R16). While a delivery is pending or being sent, the page
-// refreshes itself every refreshInterval; it never sends the event again.
+// endpoint with its attempts, eventAttemptsPage at a time from the ?after=
+// cursor (R15). While a delivery is not final, the page refreshes itself as
+// eventRefresh says; it never sends the event again.
 func (h *Handler) showEvent(w http.ResponseWriter, r *http.Request) {
 	acct, ok := h.account(w, r)
 	if !ok {
@@ -214,11 +253,34 @@ func (h *Handler) showEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := eventData{
-		Account:        acct,
-		Event:          e,
-		Path:           eventPath(acct.ID, e.ID),
-		Payload:        string(e.Payload),
-		RefreshSeconds: int(refreshInterval / time.Second),
+		Account: acct,
+		Event:   e,
+		Path:    eventPath(acct.ID, e.ID),
+		Payload: string(e.Payload),
+		After:   r.URL.Query().Get("after"),
+	}
+	data.RefreshURL = data.Path
+	if data.After != "" {
+		data.RefreshURL += "?after=" + url.QueryEscape(data.After)
+	}
+	if every := eventRefresh(e.Deliveries, time.Now()); every > 0 {
+		data.Active = true
+		data.RefreshSeconds = int(every / time.Second)
+	}
+	attempts, err := h.store.ListEventAttempts(r.Context(), acct.ID, e.ID, store.AttemptFilter{
+		After: data.After,
+		Limit: eventAttemptsPage + 1,
+	})
+	if !h.endpointDone(w, r, err) {
+		return
+	}
+	if len(attempts) > eventAttemptsPage {
+		attempts = attempts[:eventAttemptsPage]
+		data.AttemptsNext = attempts[eventAttemptsPage-1].ID
+	}
+	byEndpoint := map[string][]store.Attempt{}
+	for _, a := range attempts {
+		byEndpoint[a.EndpointID] = append(byEndpoint[a.EndpointID], a)
 	}
 	var indented bytes.Buffer
 	if json.Indent(&indented, bytes.TrimSpace(e.Payload), "", "  ") == nil {
@@ -228,7 +290,7 @@ func (h *Handler) showEvent(w http.ResponseWriter, r *http.Request) {
 		data.Sent = s
 	}
 	for _, d := range e.Deliveries {
-		row := deliveryRow{DeliveryStatus: d, State: strings.ReplaceAll(d.Status, "_", " ")}
+		row := deliveryRow{DeliveryStatus: d, State: strings.ReplaceAll(d.Status, "_", " "), AttemptList: byEndpoint[d.EndpointID]}
 		ep, err := h.store.GetEndpoint(r.Context(), acct.ID, d.EndpointID)
 		switch {
 		case err == nil:
@@ -236,9 +298,6 @@ func (h *Handler) showEvent(w http.ResponseWriter, r *http.Request) {
 		case !errors.Is(err, store.ErrNotFound):
 			h.storeError(w, r, err)
 			return
-		}
-		if d.Status == store.DeliveryPending || d.Status == store.DeliveryInProgress {
-			data.Active = true
 		}
 		data.Deliveries = append(data.Deliveries, row)
 	}

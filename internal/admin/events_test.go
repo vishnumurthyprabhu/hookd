@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -387,5 +388,129 @@ func TestSendEventCrossSiteRefused(t *testing.T) {
 	wantPage(t, u.serve(req), http.StatusForbidden)
 	if evs := u.events(acct.ID); len(evs) != 0 {
 		t.Fatalf("events = %+v, want none", evs)
+	}
+}
+
+// recordAttempt claims the next due delivery and records a failed attempt
+// whose retry is due at next, or a final one if next is nil.
+func (u *testUI) recordAttempt(next *time.Time) store.Attempt {
+	u.t.Helper()
+	ctx := context.Background()
+	d, ok, err := u.st.ClaimDelivery(ctx, time.Minute)
+	if err != nil || !ok {
+		u.t.Fatalf("claim: ok %v, err %v", ok, err)
+	}
+	a, err := u.st.RecordAttempt(ctx, d.ID, store.AttemptResult{
+		Number: d.Attempts + 1, Outcome: store.AttemptFailed, ResponseStatus: 500,
+		Error: "endpoint answered 500", Latency: 12 * time.Millisecond, NextAttemptAt: next,
+	})
+	if err != nil {
+		u.t.Fatal(err)
+	}
+	return a
+}
+
+func TestEventPageAttemptsAndNextRetry(t *testing.T) {
+	u := newTestUI(t)
+	acct, _ := u.newAccount("acme")
+	u.newEndpoint(acct.ID, store.NewEndpoint{URL: "https://example.com/a"})
+	e := u.newEvent(acct.ID, "order.paid")
+	path := "/admin/accounts/" + acct.ID + "/events/" + e.ID
+
+	past := time.Now().Add(-time.Second)
+	first := u.recordAttempt(&past)
+	next := time.Now().Add(time.Hour)
+	second := u.recordAttempt(&next)
+
+	page := wantPage(t, u.get(path), http.StatusOK)
+	for _, want := range []string{
+		`<td class="status">pending, next retry at ` + next.UTC().Format("2006-01-02 15:04:05 UTC") + `</td>`,
+		`<td class="attempts">2</td>`,
+		"endpoint answered 500",
+		"<td>12ms</td>",
+		"<td>" + first.StartedAt.UTC().Format("2006-01-02 15:04:05 UTC") + "</td>",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("event page has no %q: %q", want, page)
+		}
+	}
+	if got, want := attemptRowIDs(page), []string{first.ID, second.ID}; !slices.Equal(got, want) {
+		t.Fatalf("attempt rows = %v, want %v", got, want)
+	}
+	if strings.Contains(page, "More attempts") {
+		t.Fatalf("event page with 2 attempts has a More link: %q", page)
+	}
+}
+
+func TestEventPageRefreshInterval(t *testing.T) {
+	cases := []struct {
+		name string
+		// next is when the retry is due from now, or 0 for a final attempt.
+		next time.Duration
+		want string
+	}{
+		{"retry due within 10 s", 5 * time.Second, `content="2; url=`},
+		{"retry further off", 5 * time.Minute, `content="30; url=`},
+		{"final", 0, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			u := newTestUI(t)
+			acct, _ := u.newAccount("acme")
+			u.newEndpoint(acct.ID, store.NewEndpoint{URL: "https://example.com/a"})
+			e := u.newEvent(acct.ID, "order.paid")
+			path := "/admin/accounts/" + acct.ID + "/events/" + e.ID
+			var next *time.Time
+			if c.next > 0 {
+				at := time.Now().Add(c.next)
+				next = &at
+			}
+			u.recordAttempt(next)
+			page := wantPage(t, u.get(path), http.StatusOK)
+			if c.want == "" {
+				if strings.Contains(page, refreshTag) {
+					t.Fatalf("final event page refreshes: %q", page)
+				}
+				return
+			}
+			if !strings.Contains(page, refreshTag+" "+c.want+path+`"`) {
+				t.Fatalf("no %q refresh: %q", c.want, page)
+			}
+		})
+	}
+}
+
+func TestEventPageMoreAttempts(t *testing.T) {
+	u := newTestUI(t)
+	acct, _ := u.newAccount("acme")
+	u.newEndpoint(acct.ID, store.NewEndpoint{URL: "https://example.com/a"})
+	e := u.newEvent(acct.ID, "order.paid")
+	path := "/admin/accounts/" + acct.ID + "/events/" + e.ID
+
+	past := time.Now().Add(-time.Second)
+	var ids []string
+	for range 201 {
+		ids = append(ids, u.recordAttempt(&past).ID)
+	}
+
+	page := wantPage(t, u.get(path), http.StatusOK)
+	if got := attemptRowIDs(page); !slices.Equal(got, ids[:200]) {
+		t.Fatalf("first page shows %d attempts, want the first 200", len(got))
+	}
+	more := `href="` + path + `?after=` + ids[199] + `#attempts">More attempts</a>`
+	if !strings.Contains(page, more) {
+		t.Fatalf("first page has no %q", more)
+	}
+
+	page = wantPage(t, u.get(path+"?after="+ids[199]), http.StatusOK)
+	if got := attemptRowIDs(page); !slices.Equal(got, ids[200:]) {
+		t.Fatalf("second page shows %v, want %v", got, ids[200:])
+	}
+	if strings.Contains(page, "More attempts") || !strings.Contains(page, `href="`+path+`#attempts">First attempts</a>`) {
+		t.Fatalf("second page links: %q", page)
+	}
+	// The page refreshes to the same page of attempts.
+	if !strings.Contains(page, `content="2; url=`+path+`?after=`+ids[199]+`"`) {
+		t.Fatalf("second page does not refresh to itself: %q", page)
 	}
 }
