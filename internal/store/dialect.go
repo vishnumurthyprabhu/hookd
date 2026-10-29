@@ -33,6 +33,10 @@ type dialect struct {
 	// transaction ends. SQLite needs none: its transactions start as the one
 	// writer.
 	lockRows string
+	// skipLocked is added to a SELECT to lock the rows it reads, skipping
+	// rows another transaction has locked, so that several instances take
+	// different rows. SQLite needs none, for the same reason as lockRows.
+	skipLocked string
 	// numberedPlaceholders is true when placeholders are $1, $2, … rather
 	// than ?.
 	numberedPlaceholders bool
@@ -94,6 +98,7 @@ var postgresDialect = dialect{
 		)
 		RETURNING id, event_id, endpoint_id, attempts`,
 	lockRows:             " FOR UPDATE",
+	skipLocked:           " FOR UPDATE SKIP LOCKED",
 	numberedPlaceholders: true,
 }
 

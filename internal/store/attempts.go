@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"hookd/internal/ids"
@@ -162,6 +163,64 @@ func (s *SQLStore) GetAttempt(ctx context.Context, accountID, id string) (Attemp
 		return Attempt{}, fmt.Errorf("store: get attempt: %w", err)
 	}
 	return a, nil
+}
+
+// DeleteExpiredEvents implements Store. The select uses the events
+// created_at index; on PostgreSQL it locks the events it takes and skips
+// those another instance has locked. An event's deliveries are all created
+// with it and never go back to pending once finished, so an event selected
+// here does not get unfinished work before it is deleted.
+func (s *SQLStore) DeleteExpiredEvents(ctx context.Context, cutoff time.Time, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, fmt.Errorf("store: delete expired events: limit %d is not positive", limit)
+	}
+	var n int
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		rows, err := s.query(ctx, tx,
+			`SELECT id FROM events e
+			WHERE created_at < ?
+				AND NOT EXISTS (
+					SELECT 1 FROM deliveries d
+					WHERE d.event_id = e.id AND d.status IN (?, ?)
+				)
+			ORDER BY created_at, id
+			LIMIT ?`+s.d.skipLocked,
+			s.d.timeArg(cutoff), DeliveryPending, DeliveryInProgress, limit)
+		if err != nil {
+			return fmt.Errorf("store: delete expired events: select: %w", err)
+		}
+		var eventIDs []any
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return fmt.Errorf("store: delete expired events: select: %w", err)
+			}
+			eventIDs = append(eventIDs, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("store: delete expired events: select: %w", err)
+		}
+		if len(eventIDs) == 0 {
+			return nil
+		}
+		in := "(" + strings.Repeat("?, ", len(eventIDs)-1) + "?)"
+		for _, table := range []string{"attempts", "deliveries"} {
+			if _, err := s.exec(ctx, tx, `DELETE FROM `+table+` WHERE event_id IN `+in, eventIDs...); err != nil {
+				return fmt.Errorf("store: delete expired events: %s: %w", table, err)
+			}
+		}
+		if _, err := s.exec(ctx, tx, `DELETE FROM events WHERE id IN `+in, eventIDs...); err != nil {
+			return fmt.Errorf("store: delete expired events: events: %w", err)
+		}
+		n = len(eventIDs)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (s *SQLStore) listAttempts(ctx context.Context, op, query string, args ...any) ([]Attempt, error) {

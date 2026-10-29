@@ -185,6 +185,13 @@ type Store interface {
 	// accounts, that are pending after at least one attempt: waiting for a
 	// retry.
 	CountWaitingRetries(ctx context.Context) (int, error)
+	// DeleteExpiredEvents deletes up to limit events, across all accounts,
+	// created before cutoff, oldest first, together with their deliveries
+	// and attempts, and returns how many events it deleted. An event with a
+	// delivery that is pending or in progress is kept. Events another
+	// instance is deleting at the same time are skipped. limit must be
+	// positive.
+	DeleteExpiredEvents(ctx context.Context, cutoff time.Time, limit int) (int, error)
 
 	// ListSettings returns the settings saved in the UI, ordered by name. It
 	// returns an empty slice if there are none.

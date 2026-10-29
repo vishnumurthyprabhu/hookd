@@ -340,3 +340,131 @@ func TestAttemptListsRejectBadFilters(t *testing.T) {
 		}
 	})
 }
+
+func TestDeleteExpiredEvents(t *testing.T) {
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		c := &clock{t: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
+		s := db.New(t, store.WithClock(c.now))
+		acct := mustAccount(t, s)
+		mustEndpoint(t, s, acct.ID, store.NewEndpoint{URL: "https://example.com/hook", EventTypes: []string{"a"}})
+		other := mustAccount(t, s)
+		mustEndpoint(t, s, other.ID, store.NewEndpoint{URL: "https://example.com/other"})
+
+		// newEvent creates an event a second after the last one and, if
+		// result is not nil, claims its delivery and records result.
+		newEvent := func(accountID, eventType string, result *store.AttemptResult) (store.Event, []store.Attempt) {
+			t.Helper()
+			c.advance(time.Second)
+			e, _ := mustEvent(t, s, accountID, store.NewEvent{EventType: eventType, Payload: []byte(`{}`)})
+			if result == nil {
+				return e, nil
+			}
+			d := mustClaim(t, s, 1000*time.Hour)
+			if d.EventID != e.ID {
+				t.Fatalf("claimed a delivery of %s, want %s", d.EventID, e.ID)
+			}
+			return e, []store.Attempt{mustRecordAttempt(t, s, d.ID, *result)}
+		}
+		succeeded := &store.AttemptResult{Number: 1, Outcome: store.AttemptSucceeded, ResponseStatus: 200}
+		failed := &store.AttemptResult{Number: 1, Outcome: store.AttemptFailed, Error: "timeout"}
+		later := c.t.Add(100 * 24 * time.Hour)
+		retried := &store.AttemptResult{Number: 1, Outcome: store.AttemptFailed, Error: "timeout", NextAttemptAt: &later}
+
+		eOK, okAtt := newEvent(acct.ID, "a", succeeded)
+		eFailed, failedAtt := newEvent(other.ID, "a", failed)
+		eNone, _ := newEvent(acct.ID, "b", nil) // no endpoint takes it
+		eWaiting, waitingAtt := newEvent(acct.ID, "a", retried)
+		eBusy, _ := newEvent(acct.ID, "a", nil)
+		mustClaim(t, s, 1000*time.Hour) // eBusy's delivery stays in progress
+		c.advance(30 * 24 * time.Hour)
+		eNew, newAtt := newEvent(acct.ID, "a", succeeded)
+		cutoff := c.t.Add(-24 * time.Hour)
+
+		present := func(e store.Event) bool {
+			t.Helper()
+			_, err := s.GetEvent(ctx, e.AccountID, e.ID)
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				t.Fatal(err)
+			}
+			return err == nil
+		}
+
+		// Oldest first, limit respected across calls.
+		for i, want := range []struct {
+			n    int
+			gone []store.Event
+			kept []store.Event
+		}{
+			{2, []store.Event{eOK, eFailed}, []store.Event{eNone}},
+			{1, []store.Event{eNone}, nil},
+			{0, nil, nil},
+		} {
+			n, err := s.DeleteExpiredEvents(ctx, cutoff, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != want.n {
+				t.Fatalf("call %d: DeleteExpiredEvents = %d, want %d", i+1, n, want.n)
+			}
+			for _, e := range want.gone {
+				if present(e) {
+					t.Errorf("call %d: event %s still there", i+1, e.ID)
+				}
+			}
+			for _, e := range want.kept {
+				if !present(e) {
+					t.Errorf("call %d: event %s deleted too early", i+1, e.ID)
+				}
+			}
+		}
+
+		// Deleted events take their attempts and deliveries with them.
+		for _, a := range append(okAtt, failedAtt...) {
+			if _, err := s.GetAttempt(ctx, a.AccountID, a.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("GetAttempt(%s) after delete: err %v, want ErrNotFound", a.ID, err)
+			}
+		}
+		counts, err := s.CountDeliveriesByStatus(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantCounts := map[string]int{
+			store.DeliveryPending:    1, // eWaiting
+			store.DeliveryInProgress: 1, // eBusy
+			store.DeliverySucceeded:  1, // eNew
+			store.DeliveryFailed:     0,
+		}
+		if !reflect.DeepEqual(counts, wantCounts) {
+			t.Errorf("deliveries left = %v, want %v", counts, wantCounts)
+		}
+
+		// Old events with unfinished deliveries and newer events stay whole.
+		for _, e := range []store.Event{eWaiting, eBusy, eNew} {
+			got, err := s.GetEvent(ctx, e.AccountID, e.ID)
+			if err != nil {
+				t.Fatalf("GetEvent(%s): %v", e.ID, err)
+			}
+			if len(got.Deliveries) != 1 {
+				t.Errorf("event %s has %d deliveries, want 1", e.ID, len(got.Deliveries))
+			}
+		}
+		for _, a := range append(waitingAtt, newAtt...) {
+			if _, err := s.GetAttempt(ctx, a.AccountID, a.ID); err != nil {
+				t.Errorf("GetAttempt(%s): %v", a.ID, err)
+			}
+		}
+
+		// Once everything is older than the cutoff and finished, all goes.
+		if n, err := s.DeleteExpiredEvents(ctx, c.t.Add(time.Second), 10); err != nil || n != 1 {
+			t.Errorf("DeleteExpiredEvents after the newest = %d, %v, want 1 (eNew)", n, err)
+		}
+		if present(eNew) {
+			t.Errorf("event %s still there", eNew.ID)
+		}
+
+		if _, err := s.DeleteExpiredEvents(ctx, cutoff, 0); err == nil {
+			t.Error("DeleteExpiredEvents with limit 0 succeeded, want an error")
+		}
+	})
+}
