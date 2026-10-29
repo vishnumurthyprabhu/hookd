@@ -101,6 +101,8 @@ var definitions = []definition{
 	{"HOOKD_LOG_FORMAT", false, func(c config.Config) string { return c.LogFormat }},
 	{"HOOKD_ADMIN_UI", false, func(c config.Config) string { return strconv.FormatBool(c.AdminUI) }},
 	{"HOOKD_ADMIN_RECEIVER_URL", false, func(c config.Config) string { return c.AdminReceiverURL }},
+	{"HOOKD_RETRY_SCHEDULE", true, func(c config.Config) string { return formatSchedule(c.RetrySchedule) }},
+	{"HOOKD_RETENTION", false, func(c config.Config) string { return formatDuration(c.Retention) }},
 }
 
 // Editable reports whether name can be changed from the UI.
@@ -124,6 +126,19 @@ func formatDuration(d time.Duration) string {
 		s = strings.TrimSuffix(s, "0m")
 	}
 	return s
+}
+
+// formatSchedule shows the waits as comma-separated durations, or config.NoRetries
+// when there are none, in the form HOOKD_RETRY_SCHEDULE accepts.
+func formatSchedule(waits []time.Duration) string {
+	if len(waits) == 0 {
+		return config.NoRetries
+	}
+	parts := make([]string, len(waits))
+	for i, w := range waits {
+		parts[i] = formatDuration(w)
+	}
+	return strings.Join(parts, ",")
 }
 
 // Option configures a Manager.

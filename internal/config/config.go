@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -41,6 +42,11 @@ type Config struct {
 	// AdminReceiverURL is the base URL the workers use to reach the built-in test
 	// receiver. Empty means derived from ListenAddr; see ReceiverBaseURL.
 	AdminReceiverURL string
+	// RetrySchedule is the wait before each retry, counted from the previous
+	// attempt. Empty means no retries.
+	RetrySchedule []time.Duration
+	// Retention is how long events, deliveries and attempts are kept.
+	Retention time.Duration
 }
 
 // DB holds the database settings. Path is used by SQLite; the others by PostgreSQL,
@@ -83,6 +89,28 @@ func Default() Config {
 		LogFormat:         LogFormatText,
 		AdminUI:           true,
 		AdminReceiverURL:  "",
+		RetrySchedule:     DefaultRetrySchedule(),
+		Retention:         720 * time.Hour,
+	}
+}
+
+// MaxRetries is the most waits HOOKD_RETRY_SCHEDULE may list.
+const MaxRetries = 20
+
+// NoRetries is the HOOKD_RETRY_SCHEDULE value for an empty schedule. An empty
+// variable keeps the default, as for every setting.
+const NoRetries = "none"
+
+// DefaultRetrySchedule returns the default waits: 8 attempts over about 27½ hours.
+func DefaultRetrySchedule() []time.Duration {
+	return []time.Duration{
+		5 * time.Second,
+		5 * time.Minute,
+		30 * time.Minute,
+		2 * time.Hour,
+		5 * time.Hour,
+		10 * time.Hour,
+		10 * time.Hour,
 	}
 }
 
@@ -120,12 +148,24 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 	p.oneOf("HOOKD_LOG_FORMAT", &c.LogFormat, LogFormatText, LogFormatJSON)
 	p.boolean("HOOKD_ADMIN_UI", &c.AdminUI)
 	p.httpURL("HOOKD_ADMIN_RECEIVER_URL", &c.AdminReceiverURL)
+	p.durationList("HOOKD_RETRY_SCHEDULE", &c.RetrySchedule)
+	p.duration("HOOKD_RETENTION", &c.Retention)
 
 	// A lease that runs out while a delivery is still being sent lets another
 	// worker claim it and send it a second time.
 	if c.DeliveryLease <= c.DeliveryTimeout {
 		p.errs = append(p.errs, fmt.Errorf("  HOOKD_DELIVERY_LEASE=%q: must be longer than HOOKD_DELIVERY_TIMEOUT=%q",
 			c.DeliveryLease, c.DeliveryTimeout))
+	}
+	// No event may be deleted while its idempotency key is still honoured or a
+	// retry of it is still waiting, even with each wait 10% longer from jitter.
+	if c.Retention <= c.IdempotencyWindow {
+		p.errs = append(p.errs, fmt.Errorf("  HOOKD_RETENTION=%q: must be longer than HOOKD_IDEMPOTENCY_WINDOW=%q",
+			c.Retention, c.IdempotencyWindow))
+	}
+	if total := withJitter(c.RetrySchedule); c.Retention <= total {
+		p.errs = append(p.errs, fmt.Errorf("  HOOKD_RETENTION=%q: must be longer than the total of HOOKD_RETRY_SCHEDULE plus 10%% (%q)",
+			c.Retention, total))
 	}
 
 	if len(p.errs) > 0 {
@@ -240,6 +280,49 @@ func (p *parser) duration(name string, dst *time.Duration) {
 		return
 	}
 	*dst = d
+}
+
+// durationList accepts NoRetries or up to MaxRetries comma-separated positive
+// durations.
+func (p *parser) durationList(name string, dst *[]time.Duration) {
+	v, ok := p.get(name)
+	if !ok {
+		return
+	}
+	if strings.EqualFold(v, NoRetries) {
+		*dst = []time.Duration{}
+		return
+	}
+	want := fmt.Sprintf(`%q or up to %d comma-separated positive durations such as "5s,5m,30m"`, NoRetries, MaxRetries)
+	parts := strings.Split(v, ",")
+	if len(parts) > MaxRetries {
+		p.fail(name, v, want)
+		return
+	}
+	list := make([]time.Duration, 0, len(parts))
+	for _, s := range parts {
+		d, err := time.ParseDuration(strings.TrimSpace(s))
+		if err != nil || d <= 0 {
+			p.fail(name, v, want)
+			return
+		}
+		list = append(list, d)
+	}
+	*dst = list
+}
+
+// withJitter returns the sum of the waits plus 10%, without overflowing.
+func withJitter(waits []time.Duration) time.Duration {
+	const max = time.Duration(math.MaxInt64)
+	var total time.Duration
+	for _, w := range waits {
+		w += w / 10
+		if w < 0 || total > max-w {
+			return max
+		}
+		total += w
+	}
+	return total
 }
 
 func (p *parser) boolean(name string, dst *bool) {

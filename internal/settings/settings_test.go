@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +94,8 @@ func TestLookupOrderAndSources(t *testing.T) {
 		{"HOOKD_LISTEN_ADDR", ":9090", SourceEnvironment, false},
 		{"HOOKD_DB_PASSWORD", PasswordSet, SourceEnvironment, false},
 		{"HOOKD_DB_DRIVER", "sqlite", SourceDefault, false},
+		{"HOOKD_RETRY_SCHEDULE", "5s,5m,30m,2h,5h,10h,10h", SourceDefault, true},
+		{"HOOKD_RETENTION", "720h", SourceDefault, false},
 	}
 	for _, tt := range tests {
 		got := setting(t, m, tt.name)
@@ -110,8 +113,8 @@ func TestLookupOrderAndSources(t *testing.T) {
 			t.Errorf("%s shows the password", s.Name)
 		}
 	}
-	if editable != 7 {
-		t.Errorf("%d editable settings, want 7", editable)
+	if editable != 8 {
+		t.Errorf("%d editable settings, want 8", editable)
 	}
 
 	m2 := newManager(t, storetest.New(t), nil)
@@ -312,5 +315,87 @@ func TestRun(t *testing.T) {
 			t.Fatal("Run did not pick up the saved change")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestRetrySchedule(t *testing.T) {
+	ctx := context.Background()
+	st := storetest.New(t)
+	m := newManager(t, st, map[string]string{"HOOKD_RETENTION": "48h"})
+
+	// A schedule saved from the UI is applied at once and shown as saved.
+	if err := m.Set(ctx, "HOOKD_RETRY_SCHEDULE", "5s, 10s,1m30s"); err != nil {
+		t.Fatal(err)
+	}
+	want := []time.Duration{5 * time.Second, 10 * time.Second, 90 * time.Second}
+	if got := m.Current().RetrySchedule; !reflect.DeepEqual(got, want) {
+		t.Fatalf("RetrySchedule = %v, want %v", got, want)
+	}
+	if got := setting(t, m, "HOOKD_RETRY_SCHEDULE"); got.Value != "5s,10s,1m30s" || got.Source != SourceUI || !got.Editable {
+		t.Fatalf("after Set: %+v", got)
+	}
+
+	if err := m.Set(ctx, "HOOKD_RETRY_SCHEDULE", "none"); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Current().RetrySchedule; len(got) != 0 {
+		t.Fatalf("RetrySchedule after none = %v", got)
+	}
+	if got := setting(t, m, "HOOKD_RETRY_SCHEDULE"); got.Value != "none" {
+		t.Fatalf("after none: %+v", got)
+	}
+
+	// 20h + 20h + 4h is 48.4h with jitter, more than the 48h retention. Nothing
+	// refused is saved or applied.
+	refused := []struct{ value, want string }{
+		{"20h,20h,4h", "HOOKD_RETRY_SCHEDULE plus 10%"},
+		{"5s,soon", "HOOKD_RETRY_SCHEDULE"},
+		{"  ", "a value is required"},
+	}
+	for _, tt := range refused {
+		err := m.Set(ctx, "HOOKD_RETRY_SCHEDULE", tt.value)
+		var inv *InvalidError
+		if !errors.As(err, &inv) || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("Set(HOOKD_RETRY_SCHEDULE, %q) = %v, want an InvalidError containing %q", tt.value, err, tt.want)
+		}
+	}
+	if got := saved(t, st); len(got) != 1 || got["HOOKD_RETRY_SCHEDULE"] != "none" {
+		t.Fatalf("saved after refusals = %v", got)
+	}
+	if got := m.Current().RetrySchedule; len(got) != 0 {
+		t.Fatalf("RetrySchedule after refusals = %v", got)
+	}
+
+	if err := m.Reset(ctx, "HOOKD_RETRY_SCHEDULE"); err != nil {
+		t.Fatal(err)
+	}
+	if got := setting(t, m, "HOOKD_RETRY_SCHEDULE"); got.Value != "5s,5m,30m,2h,5h,10h,10h" || got.Source != SourceDefault {
+		t.Fatalf("after reset: %+v", got)
+	}
+}
+
+func TestRetentionNotEditable(t *testing.T) {
+	ctx := context.Background()
+	st := storetest.New(t)
+	// A saved row for HOOKD_RETENTION, which the UI never writes, is ignored.
+	if err := st.SetSetting(ctx, "HOOKD_RETENTION", "1h"); err != nil {
+		t.Fatal(err)
+	}
+	m := newManager(t, st, map[string]string{"HOOKD_RETENTION": "1000h"})
+
+	if err := m.Set(ctx, "HOOKD_RETENTION", "2000h"); !errors.Is(err, ErrNotEditable) {
+		t.Errorf("Set(HOOKD_RETENTION) = %v, want ErrNotEditable", err)
+	}
+	if err := m.Reset(ctx, "HOOKD_RETENTION"); !errors.Is(err, ErrNotEditable) {
+		t.Errorf("Reset(HOOKD_RETENTION) = %v, want ErrNotEditable", err)
+	}
+	if got := m.Current().Retention; got != 1000*time.Hour {
+		t.Errorf("Retention = %v, want 1000h", got)
+	}
+	if got := setting(t, m, "HOOKD_RETENTION"); got.Value != "1000h" || got.Source != SourceEnvironment || got.Editable {
+		t.Errorf("HOOKD_RETENTION = %+v", got)
+	}
+	if got := saved(t, st); got["HOOKD_RETENTION"] != "1h" || len(got) != 1 {
+		t.Errorf("saved = %v", got)
 	}
 }

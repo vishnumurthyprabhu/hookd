@@ -45,6 +45,8 @@ func TestDefaults(t *testing.T) {
 		LogFormat:         "text",
 		AdminUI:           true,
 		AdminReceiverURL:  "",
+		RetrySchedule:     []time.Duration{5 * time.Second, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour, 5 * time.Hour, 10 * time.Hour, 10 * time.Hour},
+		Retention:         720 * time.Hour,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("defaults:\n got  %+v\n want %+v", got, want)
@@ -92,6 +94,9 @@ var settings = []struct {
 	{"HOOKD_ADMIN_UI", "false", func(c Config) any { return c.AdminUI }, false, []string{"off", "nope"}},
 	{"HOOKD_ADMIN_RECEIVER_URL", "https://hookd.internal:8443/", func(c Config) any { return c.AdminReceiverURL }, "https://hookd.internal:8443/",
 		[]string{"hookd.internal:8080", "/admin", "ftp://hookd.internal", "http://", "http//hookd.internal", "http://[::1"}},
+	{"HOOKD_RETRY_SCHEDULE", " 1s, 2m ,3h", func(c Config) any { return c.RetrySchedule }, []time.Duration{time.Second, 2 * time.Minute, 3 * time.Hour},
+		[]string{"5s,soon", "5", "0s", "5s,-1s", "5s,,5m", "5s,", "nothing", strings.Repeat("1s,", 20) + "1s"}},
+	{"HOOKD_RETENTION", "1000h", func(c Config) any { return c.Retention }, 1000 * time.Hour, []string{"30d", "0", "-1h"}},
 }
 
 func TestEverySettingIsCovered(t *testing.T) {
@@ -109,10 +114,10 @@ func TestOverrides(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FromLookup: %v", err)
 			}
-			if got := s.get(c); got != s.want {
+			if got := s.get(c); !reflect.DeepEqual(got, s.want) {
 				t.Errorf("%s=%q gave %v, want %v", s.name, s.value, got, s.want)
 			}
-			if got := s.get(Default()); got == s.want {
+			if got := s.get(Default()); reflect.DeepEqual(got, s.want) {
 				t.Errorf("override value %v equals the default, so the test proves nothing", got)
 			}
 		})
@@ -260,5 +265,87 @@ func TestLoggerDebug(t *testing.T) {
 	c.NewLogger(&buf).Debug("loud")
 	if !strings.Contains(buf.String(), "loud") {
 		t.Errorf("debug not logged at debug level: %q", buf.String())
+	}
+}
+
+func TestRetryScheduleNone(t *testing.T) {
+	for _, v := range []string{"none", " NONE "} {
+		c, err := FromLookup(env(map[string]string{"HOOKD_RETRY_SCHEDULE": v}))
+		if err != nil {
+			t.Fatalf("%q: %v", v, err)
+		}
+		if c.RetrySchedule == nil || len(c.RetrySchedule) != 0 {
+			t.Errorf("%q gave %#v, want an empty list", v, c.RetrySchedule)
+		}
+	}
+}
+
+func TestRetryScheduleAtMost20(t *testing.T) {
+	twenty := strings.TrimSuffix(strings.Repeat("1s,", 20), ",")
+	c, err := FromLookup(env(map[string]string{"HOOKD_RETRY_SCHEDULE": twenty}))
+	if err != nil {
+		t.Fatalf("20 waits rejected: %v", err)
+	}
+	if len(c.RetrySchedule) != 20 {
+		t.Errorf("got %d waits, want 20", len(c.RetrySchedule))
+	}
+	_, err = FromLookup(env(map[string]string{"HOOKD_RETRY_SCHEDULE": twenty + ",1s"}))
+	if err == nil || !strings.Contains(err.Error(), "up to 20") {
+		t.Errorf("21 waits: error %v, want one saying up to 20", err)
+	}
+}
+
+func TestRetentionLongerThanIdempotencyWindow(t *testing.T) {
+	for _, vars := range []map[string]string{
+		{"HOOKD_RETENTION": "24h"},
+		{"HOOKD_RETENTION": "12h"},
+		{"HOOKD_IDEMPOTENCY_WINDOW": "1000h"},
+	} {
+		_, err := FromLookup(env(vars))
+		if err == nil {
+			t.Errorf("%v was accepted", vars)
+			continue
+		}
+		for _, want := range []string{"HOOKD_RETENTION", "must be longer than HOOKD_IDEMPOTENCY_WINDOW"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%v: error %q does not mention %q", vars, err, want)
+			}
+		}
+	}
+	vars := map[string]string{"HOOKD_RETENTION": "25h", "HOOKD_RETRY_SCHEDULE": "none"}
+	if _, err := FromLookup(env(vars)); err != nil {
+		t.Errorf("%v rejected: %v", vars, err)
+	}
+}
+
+func TestRetentionLongerThanScheduleWithJitter(t *testing.T) {
+	// 10h + 10h is 22h with 10% jitter; the idempotency window is 1h.
+	base := func(retention string) map[string]string {
+		return map[string]string{
+			"HOOKD_IDEMPOTENCY_WINDOW": "1h",
+			"HOOKD_RETRY_SCHEDULE":     "10h,10h",
+			"HOOKD_RETENTION":          retention,
+		}
+	}
+	for _, retention := range []string{"20h", "21h", "22h"} {
+		_, err := FromLookup(env(base(retention)))
+		if err == nil {
+			t.Errorf("retention %s was accepted", retention)
+			continue
+		}
+		for _, want := range []string{"HOOKD_RETENTION", "HOOKD_RETRY_SCHEDULE plus 10%", "22h0m0s"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("retention %s: error %q does not mention %q", retention, err, want)
+			}
+		}
+	}
+	if _, err := FromLookup(env(base("22h1s"))); err != nil {
+		t.Errorf("retention just over the schedule rejected: %v", err)
+	}
+
+	// Waits whose total overflows a time.Duration are refused, not wrapped around.
+	huge := map[string]string{"HOOKD_RETRY_SCHEDULE": strings.TrimSuffix(strings.Repeat("2000000h,", 20), ",")}
+	if _, err := FromLookup(env(huge)); err == nil || !strings.Contains(err.Error(), "plus 10%") {
+		t.Errorf("huge schedule: error %v, want the retention check", err)
 	}
 }
