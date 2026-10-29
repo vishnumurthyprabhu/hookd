@@ -167,12 +167,17 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 		pool.Run(workersCtx)
 	}()
 
+	maxPayload := func() int64 { return mgr.Current().MaxPayloadBytes }
 	opts := []api.Option{
-		api.WithMaxPayloadBytesFunc(func() int64 { return mgr.Current().MaxPayloadBytes }),
+		api.WithMaxPayloadBytesFunc(maxPayload),
 		api.WithWake(pool.Wake()),
 	}
 	if cfg.AdminUI {
-		opts = append(opts, api.WithAdmin(admin.New(s, log, admin.WithSettings(mgr))))
+		opts = append(opts, api.WithAdmin(admin.New(s, log,
+			admin.WithSettings(mgr),
+			admin.WithWake(pool.Wake()),
+			admin.WithMaxPayloadBytes(maxPayload),
+		)))
 	}
 	srv := api.New(s, log, opts...)
 	err = srv.Serve(ctx, ln)

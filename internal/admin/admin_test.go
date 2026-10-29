@@ -31,12 +31,12 @@ type testUI struct {
 
 // newTestUI returns the API server with the admin UI mounted, on a fresh
 // store.
-func newTestUI(t *testing.T) *testUI {
+func newTestUI(t *testing.T, opts ...admin.Option) *testUI {
 	t.Helper()
 	st := storetest.New(t)
 	logs := &bytes.Buffer{}
 	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	srv := api.New(st, log, api.WithAdmin(admin.New(st, log)))
+	srv := api.New(st, log, api.WithAdmin(admin.New(st, log, opts...)))
 	return &testUI{t: t, st: st, handler: srv.Handler(), logs: logs}
 }
 

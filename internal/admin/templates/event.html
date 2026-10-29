@@ -1,0 +1,42 @@
+{{define "head"}}{{if .Active}}<meta http-equiv="refresh" content="{{.RefreshSeconds}}; url={{.Path}}">{{end}}{{end}}
+{{define "content"}}
+{{if eq .Sent "created"}}<p class="success" role="status">Event sent. Its deliveries are shown below.</p>{{end}}
+{{if eq .Sent "existing"}}<p class="warning" role="status">Existing event returned: an event with this idempotency key was sent recently, so nothing new was sent.</p>{{end}}
+<p>Event <code>{{.Event.ID}}</code> of the account <a href="/admin/accounts/{{.Account.ID}}">{{.Account.Name}}</a>.</p>
+<p><a href="/admin/accounts/{{.Account.ID}}/events">Back to the events</a> · <a href="{{.Path}}">Refresh</a></p>
+
+<dl>
+<dt>Type</dt><dd><code>{{.Event.EventType}}</code></dd>
+<dt>Idempotency key</dt><dd>{{if .Event.IdempotencyKey}}<code>{{.Event.IdempotencyKey}}</code>{{else}}none{{end}}</dd>
+<dt>Sent</dt><dd>{{time .Event.CreatedAt}}</dd>
+</dl>
+
+<section>
+<h2>Deliveries</h2>
+{{if .Active}}<p class="hint">Some deliveries are not finished yet. This page refreshes every {{.RefreshSeconds}} seconds.</p>{{end}}
+{{if .Deliveries}}
+<div class="scroll">
+<table>
+<thead><tr><th>Endpoint</th><th>Status</th><th>HTTP status</th><th>Error</th></tr></thead>
+<tbody>
+{{range .Deliveries}}
+<tr id="delivery-{{.EndpointID}}">
+<td>{{if .URL}}<a href="/admin/accounts/{{$.Account.ID}}/endpoints/{{.EndpointID}}"><code>{{.URL}}</code></a>{{else}}<code>{{.EndpointID}}</code> (deleted){{end}}</td>
+<td class="status">{{.State}}</td>
+<td>{{if .ResponseStatus}}{{.ResponseStatus}}{{else}}–{{end}}</td>
+<td>{{.Error}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{else}}
+<p>No endpoint of this account received this event: none was enabled and subscribed to its type when it was sent.</p>
+{{end}}
+</section>
+
+<section>
+<h2>Payload</h2>
+<pre class="payload"><code>{{.Payload}}</code></pre>
+</section>
+{{end}}

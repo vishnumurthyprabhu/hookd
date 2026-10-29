@@ -125,8 +125,10 @@ func splitEventTypes(s string) []string {
 
 // sentence turns a check's message into a sentence for the page.
 func sentence(msg string) string {
-	if rest, ok := strings.CutPrefix(msg, "url "); ok {
-		return "URL " + rest + "."
+	for field, name := range map[string]string{"url ": "URL ", "event_type ": "Event type ", "Idempotency-Key ": "Idempotency key "} {
+		if rest, ok := strings.CutPrefix(msg, field); ok {
+			return name + rest + "."
+		}
 	}
 	return strings.ToUpper(msg[:1]) + msg[1:] + "."
 }

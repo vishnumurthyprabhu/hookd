@@ -34,10 +34,33 @@ type Handler struct {
 	log      *slog.Logger
 	pages    map[string]*template.Template
 	root     http.Handler
+	// wake is signalled after each event sent from the UI, or nil.
+	wake chan<- struct{}
+	// maxPayloadBytes returns the current largest event payload accepted.
+	maxPayloadBytes func() int64
 }
+
+// defaultMaxPayloadBytes is the largest event payload the send-event form
+// accepts without WithMaxPayloadBytes, the default of
+// HOOKD_MAX_PAYLOAD_BYTES.
+const defaultMaxPayloadBytes = 256 << 10
 
 // Option configures a Handler.
 type Option func(*Handler)
+
+// WithWake gives the handler the delivery workers' wake channel, signalled
+// after each event sent from the UI, as the API does (api.WithWake). The
+// send never blocks.
+func WithWake(wake chan<- struct{}) Option {
+	return func(h *Handler) { h.wake = wake }
+}
+
+// WithMaxPayloadBytes makes the send-event form read the largest payload it
+// accepts from max for each request, so a changed limit applies to the next
+// event. max must return a positive value.
+func WithMaxPayloadBytes(max func() int64) Option {
+	return func(h *Handler) { h.maxPayloadBytes = max }
+}
 
 // WithSettings serves the settings and health page, which shows and changes
 // the settings of m. Without it the page is not found.
@@ -47,7 +70,8 @@ func WithSettings(m *settings.Manager) Option {
 
 // New returns the admin UI on st, logging to log.
 func New(st store.Store, log *slog.Logger, opts ...Option) *Handler {
-	h := &Handler{store: st, log: log, pages: parsePages()}
+	h := &Handler{store: st, log: log, pages: parsePages(),
+		maxPayloadBytes: func() int64 { return defaultMaxPayloadBytes }}
 	for _, o := range opts {
 		o(h)
 	}
@@ -77,6 +101,10 @@ func New(st store.Store, log *slog.Logger, opts ...Option) *Handler {
 	mux.HandleFunc("GET /admin/accounts/{acct}/endpoints/{ep}/delete", h.confirmDeleteEndpoint)
 	mux.HandleFunc("POST /admin/accounts/{acct}/endpoints/{ep}/delete", h.deleteEndpoint)
 	mux.HandleFunc("GET /admin/accounts/{acct}/endpoints/{ep}/secret", h.showEndpointSecret)
+	mux.HandleFunc("GET /admin/accounts/{acct}/events", h.listEvents)
+	mux.HandleFunc("GET /admin/accounts/{acct}/events/new", h.newEventForm)
+	mux.HandleFunc("POST /admin/accounts/{acct}/events/new", h.sendEvent)
+	mux.HandleFunc("GET /admin/accounts/{acct}/events/{msg}", h.showEvent)
 	if h.settings != nil {
 		mux.HandleFunc("GET /admin/settings", h.showSettings)
 		mux.HandleFunc("POST /admin/settings/{name}", h.saveSetting)

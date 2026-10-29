@@ -1,0 +1,32 @@
+{{define "content"}}
+<p>Account <a href="/admin/accounts/{{.Account.ID}}">{{.Account.Name}}</a> (<code>{{.Account.ID}}</code>).</p>
+<p><a href="/admin/accounts/{{.Account.ID}}/events/new">Send an event</a></p>
+
+<form method="get" action="/admin/accounts/{{.Account.ID}}/events">
+<label for="type">Event type</label>
+<input id="type" name="type" value="{{.Type}}" placeholder="order.paid">
+<button type="submit">Filter</button>
+{{if .Type}}<a href="/admin/accounts/{{.Account.ID}}/events">Show all types</a>{{end}}
+</form>
+
+{{if .Events}}
+<div class="scroll">
+<table>
+<thead><tr><th>Event</th><th>Type</th><th>Sent</th><th>Deliveries</th></tr></thead>
+<tbody>
+{{range .Events}}
+<tr id="event-{{.ID}}">
+<td><a href="/admin/accounts/{{$.Account.ID}}/events/{{.ID}}"><code>{{.ID}}</code></a></td>
+<td><code>{{.EventType}}</code></td>
+<td>{{time .CreatedAt}}</td>
+<td>{{.Succeeded}} succeeded, {{.Failed}} failed, {{.Pending}} pending</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{else}}
+<p>{{if .Paged}}No more events.{{else if .Type}}This account has no events of this type.{{else}}This account has no events yet.{{end}}</p>
+{{end}}
+<p class="pager">{{if .Paged}}<a href="/admin/accounts/{{.Account.ID}}/events{{if .Type}}?type={{.Type}}{{end}}">First page</a>{{end}} {{if .Next}}<a href="/admin/accounts/{{.Account.ID}}/events?{{if .Type}}type={{.Type}}&amp;{{end}}before={{.Next}}">Next page</a>{{end}}</p>
+{{end}}

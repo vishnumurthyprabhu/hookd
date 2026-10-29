@@ -1,0 +1,16 @@
+{{define "content"}}
+<p>Account <a href="/admin/accounts/{{.Account.ID}}">{{.Account.Name}}</a> (<code>{{.Account.ID}}</code>).</p>
+<form method="post" action="/admin/accounts/{{.Account.ID}}/events/new" class="stack">
+{{range .Errors}}<p class="error" role="alert">{{.}}</p>{{end}}
+<label for="event_type">Event type</label>
+<input id="event_type" name="event_type" value="{{.EventType}}" required placeholder="order.paid">
+<label for="payload">Payload</label>
+<textarea id="payload" name="payload" rows="12" required placeholder="{&quot;order_id&quot;: 1234}">{{.Payload}}</textarea>
+<p class="hint">A JSON object. It is sent to each enabled endpoint that receives this event type, exactly as entered.</p>
+<label for="idempotency_key">Idempotency key (optional)</label>
+<input id="idempotency_key" name="idempotency_key" value="{{.IdempotencyKey}}">
+<p class="hint">If an event with the same key was sent recently, that event is returned and nothing new is sent.</p>
+<button type="submit">Send event</button>
+<a href="/admin/accounts/{{.Account.ID}}/events">Cancel</a>
+</form>
+{{end}}
