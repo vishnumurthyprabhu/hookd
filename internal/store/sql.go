@@ -122,6 +122,10 @@ func (s *SQLStore) exec(ctx context.Context, q queryer, query string, args ...an
 	return q.ExecContext(ctx, s.d.rebind(query), args...)
 }
 
+func (s *SQLStore) query(ctx context.Context, q queryer, query string, args ...any) (*sql.Rows, error) {
+	return q.QueryContext(ctx, s.d.rebind(query), args...)
+}
+
 func (s *SQLStore) queryRow(ctx context.Context, q queryer, query string, args ...any) *sql.Row {
 	return q.QueryRowContext(ctx, s.d.rebind(query), args...)
 }
