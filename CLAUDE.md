@@ -77,13 +77,16 @@ The store suite also runs on PostgreSQL with `HOOKD_TEST_PG=1` plus the `HOOKD_D
 
 Hookd is one Go binary (`cmd/hookd`) that takes webhook events over a JSON HTTP API and delivers them, signed under the Standard Webhooks spec, to registered endpoints. The database is the only outside component and doubles as the delivery queue.
 
-- `internal/api`: routes on `http.ServeMux`, bearer API key auth (key hash → account; every query is scoped by account, other accounts' objects answer 404), JSON errors `{"error":{"code","message"}}`.
+- `internal/api`: routes on `http.ServeMux`, bearer API key auth (key hash → account; every query is scoped by account, other accounts' objects answer 404), JSON errors `{"error":{"code","message"}}`. `api.WithAdmin` routes `/` and `/admin/…` to the admin UI.
+- `internal/admin`: the admin UI under `/admin`, mounted only when `HOOKD_ADMIN_UI` is on. Server-rendered `html/template` pages and plain forms, embedded templates and static files, `http.CrossOriginProtection` on every route, no sign-in (a notice on every page). It calls the Store directly with the same checks as the API. Also the built-in test receiver, `POST /admin/test-receiver/{trcv_id}`, which verifies with the official library and stores requests in the database.
+- `internal/settings`: the run-time settings manager. Effective config = environment + overrides from the `settings` table (seven editable settings), checked by `config.FromLookup`, reloaded every 5 s; consumers call `Current()` and never keep a copy. Owns the `slog.LevelVar`.
+- `internal/validate`: the URL, description, event type, idempotency key and payload checks shared by `internal/api` and `internal/admin`.
 - `internal/store`: one `Store` interface, one SQL implementation with a small dialect layer for SQLite (local) and PostgreSQL (production); embedded migrations per dialect. The `deliveries` table is the work queue: workers claim rows with a lease (`FOR UPDATE SKIP LOCKED` on PostgreSQL).
-- `internal/delivery`: worker pool woken by the API after each event and polling as a fallback; one attempt per delivery, 15 s timeout, no redirects, no retries (piece 1).
-- `internal/signing`: the Standard Webhooks signer. `internal/ids`: prefixed ULIDs, secrets, API keys. `internal/config`: every `HOOKD_*` setting and its default.
-- `cmd/testreceiver`: dev-only receiver that verifies with the official library.
+- `internal/delivery`: worker pool woken by the API and the admin UI after each event and polling as a fallback; it reads worker count, poll interval, timeout (default 15 s) and lease from the settings manager on the fly. One attempt per delivery, no redirects, no retries (piece 1).
+- `internal/signing`: the Standard Webhooks signer. `internal/ids`: prefixed ULIDs, secrets, API keys. `internal/config`: every `HOOKD_*` setting and its default, including `HOOKD_ADMIN_UI` and `HOOKD_ADMIN_RECEIVER_URL`.
+- `cmd/testreceiver`: dev-only receiver that verifies with the official library (the admin UI's built-in receiver does the same job in-process).
 
-User docs: `README.md` (local setup), `docs/configuration.md`, `docs/deployment.md`, `docs/testing.md`, `docs/api.md`. Requirements and design for each change are under `docs/changes/`.
+User docs: `README.md` (local setup, in the admin UI and with the API), `docs/overview.md`, `docs/configuration.md`, `docs/deployment.md`, `docs/testing.md`, `docs/api.md`. Requirements and design for each change are under `docs/changes/`.
 
 ## Conventions & Patterns
 

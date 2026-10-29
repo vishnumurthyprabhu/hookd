@@ -6,7 +6,7 @@ The API is JSON over HTTP. Every route under `/v1` needs an API key, sent as a b
 Authorization: Bearer hk_...
 ```
 
-The operator creates keys with `hookd account create` and `hookd apikey create`, and revokes them with `hookd apikey revoke` (see [Deploy to production](deployment.md#9-create-accounts)). Each key belongs to one account, and an account sees only its own endpoints and events. Anything that belongs to another account answers 404, as if it did not exist.
+The operator creates keys with `hookd account create` and `hookd apikey create`, or in the admin UI, and revokes them with `hookd apikey revoke` or in the admin UI (see [Deploy to production](deployment.md#9-create-accounts)). A key created in the admin UI works exactly like one from the command line. Each key belongs to one account, and an account sees only its own endpoints and events. Anything that belongs to another account answers 404, as if it did not exist.
 
 The examples assume Hookd at `http://localhost:8080` and the key in `$HOOKD_API_KEY`, as in the [local setup](../README.md#set-up-and-run-from-scratch).
 
@@ -60,6 +60,8 @@ An endpoint is a URL that receives events. It has:
 | `enabled` | boolean | `true` when created. A disabled endpoint receives no new deliveries. |
 | `created_at`, `updated_at` | string | RFC 3339 times in UTC. |
 | `secret` | string | `whsec_...`. Only in the answer to `POST /v1/endpoints`, and from `GET /v1/endpoints/{id}/secret`. |
+
+Endpoints created in the admin UI are ordinary endpoints of the account. **Test endpoints** are too: a test endpoint is an endpoint whose `url` points at Hookd's built-in test receiver, such as `http://127.0.0.1:8080/admin/test-receiver/trcv_01M63TNJFB7E4H67PBC23F27CY`. The API lists, gets, updates, disables and deletes it like any other endpoint, events are delivered and signed to it the same way, and nothing in its JSON marks it as a test endpoint. Only the admin UI marks it, and shows the requests its receiver got. If its `url` is changed through the API, deliveries go to the new URL and the built-in receiver no longer sees them. The built-in receiver is not part of the `/v1` API and needs no API key; it answers 404 when the admin UI is off.
 
 ### Create an endpoint
 

@@ -7,12 +7,14 @@ Hookd is a webhook sending service. An application that has to notify its own cu
 
 The application doesn't have to build and run its own webhook sending, signing and delivery tracking. It makes one HTTP call per event and can look up later whether each delivery succeeded.
 
+Hookd also serves a browser admin UI at `/admin`, from the same binary. Whoever runs Hookd can use it to create accounts and API keys, register endpoints, send events, check deliveries, receive and verify test webhooks with a receiver built into Hookd, and change settings while Hookd runs, without a shell on the host. The UI has no sign-in yet, so it must be reachable only by trusted people, and it can be turned off.
+
 In this version each delivery is attempted once. Failures are recorded but not retried.
 
 ## Who it is for
 
 - Developers whose application has to send webhooks to its customers. They use Hookd's JSON API with an API key.
-- Operators who run Hookd and issue accounts and API keys from its command line.
+- Operators who run Hookd and issue accounts and API keys from its command line or its admin UI.
 - People who run webhook receivers and verify deliveries with the endpoint's signing secret.
 
 ## Main features
@@ -27,8 +29,11 @@ In this version each delivery is attempted once. Failures are recorded but not r
 - Operator commands to create accounts and to create, list and revoke API keys.
 - Delivery survives restarts, because the database is the queue. Several instances can share one PostgreSQL database.
 - `/healthz` check that includes the database.
-- Every setting comes from a `HOOKD_*` environment variable, and every setting has a default that works locally.
-- A development test receiver that verifies signatures with the official library.
+- Every setting comes from a `HOOKD_*` environment variable, and every setting has a default that works locally. Seven of them can be overridden from the admin UI.
+- An admin UI under `/admin` (no sign-in, can be turned off with `HOOKD_ADMIN_UI=false`): accounts and API keys (each key shown once), endpoints with their secrets shown on demand, sending events and following their deliveries, and a settings and health page.
+- Test endpoints, created in the admin UI, that deliver to a receiver built into Hookd. It checks each request's signature, answers with a status of your choice (for example 500 to see failures), and keeps the last 100 requests for the UI to show.
+- Seven settings (worker count, poll interval, delivery timeout and lease, payload limit, idempotency window, log level) can be changed in the admin UI. They apply without a restart, on every instance within 5 seconds.
+- A development test receiver, `cmd/testreceiver`, that verifies signatures with the official library.
 
 ## Built with
 
@@ -36,4 +41,5 @@ In this version each delivery is attempted once. Failures are recorded but not r
 - SQLite locally through `modernc.org/sqlite` (pure Go, nothing to install).
 - PostgreSQL in production through `github.com/jackc/pgx/v5`.
 - `github.com/oklog/ulid/v2` for prefixed IDs.
-- `github.com/standard-webhooks/standard-webhooks/libraries`, used in tests and the test receiver only.
+- `github.com/standard-webhooks/standard-webhooks/libraries`, used by the built-in test receiver, the tests and `cmd/testreceiver` to verify signatures.
+- The admin UI uses Go's `html/template` and `embed`, with plain HTML forms and no JavaScript framework or build step.
