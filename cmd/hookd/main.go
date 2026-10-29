@@ -103,7 +103,7 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 
 	ctx, stop := signalContext()
 	defer stop()
-	if err := api.New(s, log).Serve(ctx, ln); err != nil {
+	if err := api.New(s, log, api.WithMaxPayloadBytes(cfg.MaxPayloadBytes)).Serve(ctx, ln); err != nil {
 		log.Error("serve", "err", err)
 		return 1
 	}

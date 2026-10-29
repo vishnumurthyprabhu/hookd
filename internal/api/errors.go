@@ -12,6 +12,13 @@ const (
 	CodeMethodNotAllowed = "method_not_allowed"
 	CodeUnavailable      = "unavailable"
 	CodeInternal         = "internal_error"
+
+	CodeInvalidJSON           = "invalid_json"
+	CodeInvalidRequest        = "invalid_request"
+	CodeInvalidEventType      = "invalid_event_type"
+	CodeInvalidPayload        = "invalid_payload"
+	CodePayloadTooLarge       = "payload_too_large"
+	CodeInvalidIdempotencyKey = "invalid_idempotency_key"
 )
 
 type errorBody struct {

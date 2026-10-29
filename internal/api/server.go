@@ -20,17 +20,45 @@ const (
 	shutdownTimeout = 10 * time.Second
 )
 
+// defaultMaxPayloadBytes is the event payload limit when WithMaxPayloadBytes
+// is not given (R9).
+const defaultMaxPayloadBytes = 256 << 10
+
 // Server is Hookd's HTTP API.
 type Server struct {
-	store store.Store
-	log   *slog.Logger
-	mux   *http.ServeMux
+	store           store.Store
+	log             *slog.Logger
+	mux             *http.ServeMux
+	maxPayloadBytes int64
+	wake            chan<- struct{}
+}
+
+// Option changes how New sets up a Server.
+type Option func(*Server)
+
+// WithMaxPayloadBytes sets the largest event payload POST /v1/events
+// accepts (HOOKD_MAX_PAYLOAD_BYTES). n must be positive.
+func WithMaxPayloadBytes(n int64) Option {
+	return func(s *Server) { s.maxPayloadBytes = n }
+}
+
+// WithWake gives the server a channel to signal after each new event is
+// stored, so delivery workers can start at once. The send never blocks: if
+// the channel is full, the signal is dropped, since a pending one already
+// wakes the workers.
+func WithWake(wake chan<- struct{}) Option {
+	return func(s *Server) { s.wake = wake }
 }
 
 // New returns a Server that keeps its state in st and logs to log.
-func New(st store.Store, log *slog.Logger) *Server {
-	s := &Server{store: st, log: log, mux: http.NewServeMux()}
+func New(st store.Store, log *slog.Logger, opts ...Option) *Server {
+	s := &Server{store: st, log: log, mux: http.NewServeMux(), maxPayloadBytes: defaultMaxPayloadBytes}
+	for _, opt := range opts {
+		opt(s)
+	}
 	s.mux.HandleFunc("GET /healthz", s.healthz)
+	s.mux.HandleFunc("POST /v1/events", s.createEvent)
+	s.mux.HandleFunc("GET /v1/events/{id}", s.getEvent)
 	return s
 }
 
