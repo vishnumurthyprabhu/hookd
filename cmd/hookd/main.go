@@ -15,6 +15,7 @@ import (
 
 	"hookd/internal/api"
 	"hookd/internal/config"
+	"hookd/internal/delivery"
 	"hookd/internal/store"
 )
 
@@ -103,7 +104,25 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 
 	ctx, stop := signalContext()
 	defer stop()
-	if err := api.New(s, log, api.WithMaxPayloadBytes(cfg.MaxPayloadBytes)).Serve(ctx, ln); err != nil {
+	pool := delivery.NewPool(s, log, delivery.Config{
+		Workers:      cfg.Workers,
+		PollInterval: cfg.PollInterval,
+		Timeout:      cfg.DeliveryTimeout,
+		Lease:        cfg.DeliveryLease,
+	})
+	workersCtx, stopWorkers := context.WithCancel(ctx)
+	workersDone := make(chan struct{})
+	go func() {
+		defer close(workersDone)
+		pool.Run(workersCtx)
+	}()
+
+	srv := api.New(s, log, api.WithMaxPayloadBytes(cfg.MaxPayloadBytes), api.WithWake(pool.Wake()))
+	err = srv.Serve(ctx, ln)
+	// Workers finish the deliveries they are sending before they stop.
+	stopWorkers()
+	<-workersDone
+	if err != nil {
 		log.Error("serve", "err", err)
 		return 1
 	}
