@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,9 +92,13 @@ type testEndpoint struct {
 type testEvent struct {
 	ID         string `json:"id"`
 	Deliveries []struct {
-		EndpointID     string `json:"endpoint_id"`
-		Status         string `json:"status"`
-		ResponseStatus *int   `json:"response_status"`
+		EndpointID     string     `json:"endpoint_id"`
+		Status         string     `json:"status"`
+		ResponseStatus *int       `json:"response_status"`
+		Error          string     `json:"error"`
+		Attempts       int        `json:"attempts"`
+		LastAttemptAt  *time.Time `json:"last_attempt_at"`
+		NextAttemptAt  *time.Time `json:"next_attempt_at"`
 	} `json:"deliveries"`
 }
 
@@ -146,12 +151,20 @@ func (c apiClient) waitDelivered(id string) testEvent {
 // createAccount runs "hookd account create" and returns the printed API key.
 func createAccount(t *testing.T, name string) string {
 	t.Helper()
+	_, key := createAccountWithID(t, name)
+	return key
+}
+
+// createAccountWithID runs "hookd account create" and returns the printed
+// account ID and API key.
+func createAccountWithID(t *testing.T, name string) (id, key string) {
+	t.Helper()
 	out := runOK(t, "account", "create", "--name", name)
-	m := regexp.MustCompile(`(?m)^api_key: +(\S+)$`).FindStringSubmatch(out)
+	m := regexp.MustCompile(`(?m)^account_id: +(\S+)\napi_key: +(\S+)$`).FindStringSubmatch(out)
 	if m == nil {
 		t.Fatalf("account create printed %q", out)
 	}
-	return m[1]
+	return m[1], m[2]
 }
 
 // startServe runs "hookd serve" in the background on a free port and returns
@@ -164,33 +177,41 @@ func startServe(t *testing.T) string {
 	}
 	addr := ln.Addr().String()
 	ln.Close()
+	return startServeAt(t, addr).base
+}
+
+// serveRun is one "hookd serve" started by startServeAt.
+type serveRun struct {
+	t    *testing.T
+	base string
+	// cancel tells the server to stop and returns at once.
+	cancel context.CancelFunc
+	done   chan int
+	stderr *bytes.Buffer
+	once   sync.Once
+}
+
+// startServeAt runs "hookd serve" in the background on addr and returns once
+// /healthz answers. The server stops at test cleanup if it has not been
+// stopped before, so a test can stop it and start another on the same
+// address and database.
+func startServeAt(t *testing.T, addr string) *serveRun {
+	t.Helper()
 	t.Setenv("HOOKD_LISTEN_ADDR", addr)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	setSignalContext(t, func() (context.Context, context.CancelFunc) { return ctx, cancel })
-	done := make(chan int, 1)
-	var stderr bytes.Buffer
-	go func() { done <- run([]string{"serve"}, io.Discard, &stderr) }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case code := <-done:
-			if code != 0 {
-				t.Errorf("serve exit code %d, stderr %q", code, stderr.String())
-			}
-		case <-time.After(10 * time.Second):
-			t.Error("serve did not stop after its context was cancelled")
-		}
-	})
+	s := &serveRun{t: t, base: "http://" + addr, cancel: cancel, done: make(chan int, 1), stderr: &bytes.Buffer{}}
+	go func() { s.done <- run([]string{"serve"}, io.Discard, s.stderr) }()
+	t.Cleanup(s.stop)
 
-	base := "http://" + addr
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		resp, err := http.Get(base + "/healthz")
+		resp, err := http.Get(s.base + "/healthz")
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return base
+				return s
 			}
 		}
 		if time.Now().After(deadline) {
@@ -198,6 +219,24 @@ func startServe(t *testing.T) string {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// stop cancels the server and waits until it has stopped.
+func (s *serveRun) stop() {
+	s.once.Do(func() {
+		s.cancel()
+		// The test's client can hold a connection it dialed but never
+		// used, which the server's shutdown waits 5 s for. Close it.
+		http.DefaultClient.CloseIdleConnections()
+		select {
+		case code := <-s.done:
+			if code != 0 {
+				s.t.Errorf("serve exit code %d, stderr %q", code, s.stderr.String())
+			}
+		case <-time.After(10 * time.Second):
+			s.t.Error("serve did not stop after its context was cancelled")
+		}
+	})
 }
 
 // TestAcceptance follows the acceptance steps of requirements.md against the
