@@ -34,7 +34,7 @@
       "name": "HTTP API",
       "kind": "service",
       "group": "hookd binary",
-      "description": "Versioned /v1 JSON routes for endpoints, events and secrets on http.ServeMux, plus /healthz; routes / and /admin to the admin UI when it is on."
+      "description": "Versioned /v1 JSON routes for endpoints, events, secrets and delivery attempts on http.ServeMux, plus /healthz; routes / and /admin to the admin UI when it is on."
     },
     {
       "id": "auth",
@@ -48,7 +48,7 @@
       "name": "Admin UI",
       "kind": "ui",
       "group": "hookd binary",
-      "description": "Server-rendered pages under /admin (HOOKD_ADMIN_UI) for accounts, API keys, endpoints, events and settings; no sign-in, cross-origin protected."
+      "description": "Server-rendered pages under /admin (HOOKD_ADMIN_UI) for accounts, API keys, endpoints, events with their attempts, and settings; no sign-in, cross-origin protected."
     },
     {
       "id": "builtin-receiver",
@@ -76,7 +76,14 @@
       "name": "Delivery workers",
       "kind": "worker",
       "group": "hookd binary",
-      "description": "Goroutine pool, woken by the API, the admin UI or by polling, that claims deliveries, signs them and POSTs each once, with live settings."
+      "description": "Goroutine pool, woken by the API, the admin UI or by polling, that claims due deliveries, signs and POSTs them, records each attempt and schedules retries on the live retry schedule."
+    },
+    {
+      "id": "retention",
+      "name": "Retention runner",
+      "kind": "worker",
+      "group": "hookd binary",
+      "description": "Started by serve: one minute after start, then hourly, deletes events older than HOOKD_RETENTION with their deliveries and attempts, in batches of 500."
     },
     {
       "id": "signer",
@@ -111,7 +118,7 @@
       "name": "Deliveries queue",
       "kind": "queue",
       "group": "Database",
-      "description": "The deliveries table, one row per event and endpoint, claimed by workers under a lease (SKIP LOCKED on PostgreSQL)."
+      "description": "The deliveries table, one row per event and endpoint; workers claim rows whose next_attempt_at is due under a lease (SKIP LOCKED on PostgreSQL), and a waiting retry is a pending row with a later time."
     },
     {
       "id": "sqlite",
@@ -125,7 +132,7 @@
       "name": "PostgreSQL",
       "kind": "store",
       "group": "Database",
-      "description": "Production database holding accounts, API keys, endpoints, events, deliveries, settings and test receiver requests."
+      "description": "Production database holding accounts, API keys, endpoints, events, deliveries, attempts, settings and test receiver requests."
     },
     {
       "id": "test-receiver",
@@ -174,6 +181,21 @@
       "from": "operator-cli",
       "to": "delivery-workers",
       "label": "starts (serve)"
+    },
+    {
+      "from": "operator-cli",
+      "to": "retention",
+      "label": "starts (serve)"
+    },
+    {
+      "from": "retention",
+      "to": "store",
+      "label": "deletes expired events"
+    },
+    {
+      "from": "retention",
+      "to": "settings",
+      "label": "live retention period"
     },
     {
       "from": "operator-cli",
@@ -283,7 +305,7 @@
     {
       "from": "delivery-workers",
       "to": "store",
-      "label": "claims, records results"
+      "label": "claims, records attempts"
     },
     {
       "from": "delivery-workers",
@@ -357,7 +379,7 @@
     }
   ],
   "meta": {
-    "commit": "b8aa672967f49b84534294ffeb135ae03f357d12",
-    "drawnAt": "2026-10-29T12:51:43.530Z"
+    "commit": "d5c3b034e8e0efb51a1436f012108efe50c332eb",
+    "drawnAt": "2026-10-29T18:53:06.182Z"
   }
 }

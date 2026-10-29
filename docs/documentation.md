@@ -1,4 +1,4 @@
-<!-- Synced by Software Factory from commit b8aa672967f49b84534294ffeb135ae03f357d12, 2026-10-29T12:53:01.612Z. Do not edit this line. -->
+<!-- Synced by Software Factory from commit d5c3b034e8e0efb51a1436f012108efe50c332eb, 2026-10-29T18:53:28.407Z. Do not edit this line. -->
 # Hookd documentation
 
 ## Prerequisites
@@ -223,7 +223,7 @@ The full guide, with an nginx example, a `sslmode` table, and when to set `HOOKD
 - nginx on the instance terminates HTTPS on 443 with a self-signed certificate, so call it with `curl -k`. Port 80 serves only `/healthz` and redirects everything else to HTTPS. An Elastic IP keeps the address when the instance is replaced, and new source replaces the instance.
 - Logs go to CloudWatch Logs. Operator commands run in a Session Manager shell on the instance, for example `sudo -u hookd bash -c 'set -a; . /etc/hookd/hookd.env; hookd account create --name NAME'`.
 
-The stack doesn't set `HOOKD_ADMIN_UI`, and nginx forwards every path on 443, so the admin UI is reachable from anywhere without a sign-in. Use this box only for testing.
+The stack doesn't set `HOOKD_ADMIN_UI`, so the admin UI is on. nginx lets `/admin` and `/` through on 443 only from one address, `adminCidr` in `deploy/aws/lib/hookd-stack.ts`, and answers `403` to everyone else; set it to your own public IP before deploying. The UI is also reachable on the instance's loopback through a Session Manager port forward. The API on 443 is open to anyone. Use this box only for testing.
 
 ### Settings
 

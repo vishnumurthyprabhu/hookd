@@ -1,4 +1,4 @@
-<!-- Synced by Software Factory from commit b8aa672967f49b84534294ffeb135ae03f357d12, 2026-10-29T12:53:01.611Z. Do not edit this line. -->
+<!-- Synced by Software Factory from commit d5c3b034e8e0efb51a1436f012108efe50c332eb, 2026-10-29T18:53:28.407Z. Do not edit this line. -->
 # Hookd
 
 ## What it is
