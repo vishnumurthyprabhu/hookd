@@ -1,0 +1,28 @@
+{{define "content"}}
+<p>Endpoint <code>{{.Endpoint.ID}}</code> of the account <a href="/admin/accounts/{{.Account.ID}}">{{.Account.Name}}</a>{{if .Test}}, a <span class="tag">test endpoint</span> that delivers to Hookd's built-in receiver{{end}}. Created {{time .Endpoint.CreatedAt}}, updated {{time .Endpoint.UpdatedAt}}.</p>
+<p><a href="/admin/accounts/{{.Account.ID}}/endpoints">Back to the endpoints</a> · <a href="/admin/accounts/{{.Account.ID}}/endpoints/{{.Endpoint.ID}}/secret">Show the signing secret</a> · <a href="/admin/accounts/{{.Account.ID}}/endpoints/{{.Endpoint.ID}}/delete">Delete</a></p>
+
+<section>
+<h2>State</h2>
+<form method="post" action="/admin/accounts/{{.Account.ID}}/endpoints/{{.Endpoint.ID}}/{{if .Endpoint.Enabled}}disable{{else}}enable{{end}}">
+<p id="endpoint-state">This endpoint is <strong>{{if .Endpoint.Enabled}}enabled{{else}}disabled{{end}}</strong>.</p>
+<button type="submit">{{if .Endpoint.Enabled}}Disable{{else}}Enable{{end}}</button>
+<p class="hint">A disabled endpoint receives no new deliveries.</p>
+</form>
+</section>
+
+<section>
+<h2>Edit</h2>
+<form method="post" action="/admin/accounts/{{.Account.ID}}/endpoints/{{.Endpoint.ID}}" class="stack">
+{{range .Errors}}<p class="error" role="alert">{{.}}</p>{{end}}
+<label for="url">URL</label>
+<input id="url" name="url" type="url" value="{{.URL}}" required>
+<label for="description">Description (optional)</label>
+<input id="description" name="description" value="{{.Description}}">
+<label for="event_types">Event types</label>
+<textarea id="event_types" name="event_types" rows="4">{{.EventTypes}}</textarea>
+<p class="hint">Separate event types with commas or new lines. Leave empty to receive all event types.</p>
+<button type="submit">Save</button>
+</form>
+</section>
+{{end}}

@@ -1,0 +1,26 @@
+{{define "content"}}
+<p>Account <a href="/admin/accounts/{{.Account.ID}}">{{.Account.Name}}</a> (<code>{{.Account.ID}}</code>).</p>
+<p><a href="/admin/accounts/{{.Account.ID}}/endpoints/new">New endpoint</a></p>
+
+{{if .Endpoints}}
+<div class="scroll">
+<table>
+<thead><tr><th>URL</th><th>Description</th><th>Event types</th><th>State</th><th></th></tr></thead>
+<tbody>
+{{range .Endpoints}}
+<tr id="endpoint-{{.ID}}">
+<td><a href="/admin/accounts/{{$.Account.ID}}/endpoints/{{.ID}}"><code>{{.URL}}</code></a>{{if .Test}} <span class="tag">test endpoint</span>{{end}}</td>
+<td>{{.Description}}</td>
+<td>{{if .EventTypes}}{{range $i, $t := .EventTypes}}{{if $i}}, {{end}}<code>{{$t}}</code>{{end}}{{else}}all{{end}}</td>
+<td>{{if .Enabled}}enabled{{else}}disabled{{end}}</td>
+<td><a href="/admin/accounts/{{$.Account.ID}}/endpoints/{{.ID}}/secret">Secret</a></td>
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{else}}
+<p>{{if .Paged}}No more endpoints.{{else}}This account has no endpoints yet.{{end}}</p>
+{{end}}
+<p class="pager">{{if .Paged}}<a href="/admin/accounts/{{.Account.ID}}/endpoints">First page</a>{{end}} {{if .Next}}<a href="/admin/accounts/{{.Account.ID}}/endpoints?after={{.Next}}">Next page</a>{{end}}</p>
+{{end}}

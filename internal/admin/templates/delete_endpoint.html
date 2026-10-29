@@ -1,0 +1,8 @@
+{{define "content"}}
+<p>Delete the endpoint <code>{{.Endpoint.URL}}</code> (<code>{{.Endpoint.ID}}</code>) of the account <strong>{{.Account.Name}}</strong> (<code>{{.Account.ID}}</code>)?</p>
+<p class="warning">It receives no new deliveries, and it can no longer be seen or changed. This cannot be undone.</p>
+<form method="post" action="/admin/accounts/{{.Account.ID}}/endpoints/{{.Endpoint.ID}}/delete">
+<button type="submit">Delete endpoint</button>
+<a href="/admin/accounts/{{.Account.ID}}/endpoints/{{.Endpoint.ID}}">Cancel</a>
+</form>
+{{end}}

@@ -1,0 +1,15 @@
+{{define "content"}}
+<p>Account <a href="/admin/accounts/{{.Account.ID}}">{{.Account.Name}}</a> (<code>{{.Account.ID}}</code>).</p>
+<form method="post" action="/admin/accounts/{{.Account.ID}}/endpoints/new" class="stack">
+{{range .Errors}}<p class="error" role="alert">{{.}}</p>{{end}}
+<label for="url">URL</label>
+<input id="url" name="url" type="url" value="{{.URL}}" required placeholder="https://example.com/webhooks">
+<label for="description">Description (optional)</label>
+<input id="description" name="description" value="{{.Description}}">
+<label for="event_types">Event types</label>
+<textarea id="event_types" name="event_types" rows="4">{{.EventTypes}}</textarea>
+<p class="hint">Separate event types with commas or new lines, for example <code>order.paid</code>. Leave empty to receive all event types.</p>
+<button type="submit">Create endpoint</button>
+<a href="/admin/accounts/{{.Account.ID}}/endpoints">Cancel</a>
+</form>
+{{end}}
