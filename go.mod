@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/oklog/ulid/v2 v2.1.2
+	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1
 	modernc.org/sqlite v1.61.0
 )
 
