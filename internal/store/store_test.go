@@ -2,14 +2,12 @@ package store_test
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/jackc/pgx/v5"
 
 	"hookd/internal/config"
 	"hookd/internal/ids"
@@ -17,82 +15,59 @@ import (
 	"hookd/internal/store/storetest"
 )
 
-func sqliteConfig(t *testing.T) config.DB {
-	cfg := config.Default().DB
-	cfg.Path = filepath.Join(t.TempDir(), "hookd.db")
-	return cfg
-}
-
 func TestMigrateTwiceIsNoOp(t *testing.T) {
-	ctx := context.Background()
-	cfg := sqliteConfig(t)
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		applied, err := db.Open(t).Migrate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(applied) == 0 || applied[0] != "0001_init" {
+			t.Fatalf("first Migrate applied %v, want it to start with 0001_init", applied)
+		}
 
-	s, err := store.Open(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	applied, err := s.Migrate(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(applied) == 0 || applied[0] != "0001_init" {
-		t.Fatalf("first Migrate applied %v, want it to start with 0001_init", applied)
-	}
-	s.Close()
-
-	// A new connection to the same file finds nothing left to do.
-	s, err = store.Open(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	applied, err = s.Migrate(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(applied) != 0 {
-		t.Fatalf("second Migrate applied %v, want nothing", applied)
-	}
+		// A new connection to the same database finds nothing left to do.
+		applied, err = db.Open(t).Migrate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(applied) != 0 {
+			t.Fatalf("second Migrate applied %v, want nothing", applied)
+		}
+	})
 }
 
 func TestMigrateCreatesTablesAndRecordsVersions(t *testing.T) {
-	ctx := context.Background()
-	cfg := sqliteConfig(t)
-	st, err := store.Open(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	st.Close()
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		db.New(t)
 
-	// Inspect the schema with a plain connection.
-	db, err := sql.Open("sqlite", cfg.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	for _, name := range []string{
-		"accounts", "api_keys", "endpoints", "events", "deliveries", "schema_migrations",
-		"deliveries_status_locked_until", "events_account_idempotency_key",
-	} {
-		var n int
-		if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name = ?`, name).Scan(&n); err != nil {
+		// Inspect the schema with a plain connection.
+		conn := db.SQL(t)
+		query := `SELECT count(*) FROM sqlite_master WHERE name = ?`
+		if db.Driver() == config.DriverPostgres {
+			query = `SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+				WHERE c.relname = $1 AND n.nspname = current_schema()`
+		}
+		for _, name := range []string{
+			"accounts", "api_keys", "endpoints", "events", "deliveries", "schema_migrations",
+			"deliveries_status_locked_until", "events_account_idempotency_key",
+		} {
+			var n int
+			if err := conn.QueryRow(query, name).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 1 {
+				t.Errorf("schema object %q missing", name)
+			}
+		}
+		var versions int
+		if err := conn.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version = '0001_init'`).Scan(&versions); err != nil {
 			t.Fatal(err)
 		}
-		if n != 1 {
-			t.Errorf("schema object %q missing", name)
+		if versions != 1 {
+			t.Errorf("schema_migrations has %d rows for 0001_init, want 1", versions)
 		}
-	}
-	var versions int
-	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version = '0001_init'`).Scan(&versions); err != nil {
-		t.Fatal(err)
-	}
-	if versions != 1 {
-		t.Errorf("schema_migrations has %d rows for 0001_init, want 1", versions)
-	}
+	})
 }
 
 func TestOpenUnknownDriver(t *testing.T) {
@@ -121,110 +96,127 @@ func TestOpenMemory(t *testing.T) {
 }
 
 func TestAccountAndAPIKey(t *testing.T) {
-	ctx := context.Background()
-	now := time.Date(2026, 10, 29, 12, 0, 0, 123456789, time.UTC)
-	s := storetest.New(t, store.WithClock(func() time.Time { return now }))
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		now := time.Date(2026, 10, 29, 12, 0, 0, 123456789, time.UTC)
+		s := db.New(t, store.WithClock(func() time.Time { return now }))
 
-	acct, err := s.CreateAccount(ctx, "acme")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(acct.ID, ids.PrefixAccount) || acct.Name != "acme" {
-		t.Fatalf("account = %+v", acct)
-	}
+		acct, err := s.CreateAccount(ctx, "acme")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(acct.ID, ids.PrefixAccount) || acct.Name != "acme" {
+			t.Fatalf("account = %+v", acct)
+		}
 
-	rec, key, err := s.CreateAPIKey(ctx, acct.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(key, ids.APIKeyPrefix) {
-		t.Fatalf("key %q lacks prefix %q", key, ids.APIKeyPrefix)
-	}
-	if !strings.HasPrefix(rec.ID, ids.PrefixAPIKey) || rec.AccountID != acct.ID || rec.Prefix != ids.APIKeyDisplayPrefix(key) {
-		t.Fatalf("key record = %+v", rec)
-	}
+		rec, key, err := s.CreateAPIKey(ctx, acct.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(key, ids.APIKeyPrefix) {
+			t.Fatalf("key %q lacks prefix %q", key, ids.APIKeyPrefix)
+		}
+		if !strings.HasPrefix(rec.ID, ids.PrefixAPIKey) || rec.AccountID != acct.ID || rec.Prefix != ids.APIKeyDisplayPrefix(key) {
+			t.Fatalf("key record = %+v", rec)
+		}
 
-	got, err := s.AccountByAPIKeyHash(ctx, ids.HashAPIKey(key))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := store.Account{ID: acct.ID, Name: "acme", CreatedAt: now.Truncate(time.Microsecond)}
-	if got != want {
-		t.Fatalf("AccountByAPIKeyHash = %+v, want %+v", got, want)
-	}
-
-	if _, err := s.AccountByAPIKeyHash(ctx, ids.HashAPIKey(key+"x")); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("unknown hash: err = %v, want ErrNotFound", err)
-	}
-	if _, err := s.AccountByAPIKeyHash(ctx, key); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("plain key used as hash: err = %v, want ErrNotFound", err)
-	}
-}
-
-func TestAPIKeysBelongToTheirAccount(t *testing.T) {
-	ctx := context.Background()
-	s := storetest.New(t)
-
-	a, _ := s.CreateAccount(ctx, "a")
-	b, _ := s.CreateAccount(ctx, "b")
-	_, keyA, err := s.CreateAPIKey(ctx, a.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, keyB, err := s.CreateAPIKey(ctx, b.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, keyA2, err := s.CreateAPIKey(ctx, a.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for key, want := range map[string]string{keyA: a.ID, keyB: b.ID, keyA2: a.ID} {
 		got, err := s.AccountByAPIKeyHash(ctx, ids.HashAPIKey(key))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.ID != want {
-			t.Errorf("key %s… belongs to %s, want %s", ids.APIKeyDisplayPrefix(key), got.ID, want)
+		want := store.Account{ID: acct.ID, Name: "acme", CreatedAt: now.Truncate(time.Microsecond)}
+		if got != want {
+			t.Fatalf("AccountByAPIKeyHash = %+v, want %+v", got, want)
 		}
-	}
+
+		if _, err := s.AccountByAPIKeyHash(ctx, ids.HashAPIKey(key+"x")); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("unknown hash: err = %v, want ErrNotFound", err)
+		}
+		if _, err := s.AccountByAPIKeyHash(ctx, key); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("plain key used as hash: err = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+func TestAPIKeysBelongToTheirAccount(t *testing.T) {
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		s := db.New(t)
+
+		a, _ := s.CreateAccount(ctx, "a")
+		b, _ := s.CreateAccount(ctx, "b")
+		_, keyA, err := s.CreateAPIKey(ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, keyB, err := s.CreateAPIKey(ctx, b.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, keyA2, err := s.CreateAPIKey(ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for key, want := range map[string]string{keyA: a.ID, keyB: b.ID, keyA2: a.ID} {
+			got, err := s.AccountByAPIKeyHash(ctx, ids.HashAPIKey(key))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ID != want {
+				t.Errorf("key %s… belongs to %s, want %s", ids.APIKeyDisplayPrefix(key), got.ID, want)
+			}
+		}
+	})
 }
 
 func TestCreateAPIKeyUnknownAccount(t *testing.T) {
-	s := storetest.New(t)
-	if _, _, err := s.CreateAPIKey(context.Background(), "acct_missing"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
-	}
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		s := db.New(t)
+		if _, _, err := s.CreateAPIKey(context.Background(), "acct_missing"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+	})
 }
 
 func TestStoreOnlyKeepsKeyHash(t *testing.T) {
-	ctx := context.Background()
-	cfg := sqliteConfig(t)
-	s, err := store.Open(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	acct, _ := s.CreateAccount(ctx, "acme")
-	_, key, err := s.CreateAPIKey(ctx, acct.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.Close()
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		s := db.New(t)
+		acct, _ := s.CreateAccount(ctx, "acme")
+		_, key, err := s.CreateAPIKey(ctx, acct.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	db, err := sql.Open("sqlite", cfg.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var hash, prefix string
-	if err := db.QueryRow(`SELECT key_hash, key_prefix FROM api_keys`).Scan(&hash, &prefix); err != nil {
-		t.Fatal(err)
-	}
-	if hash != ids.HashAPIKey(key) || hash == key || len(prefix) >= len(key) {
-		t.Fatalf("stored hash %q prefix %q for key %q", hash, prefix, key)
+		var hash, prefix string
+		if err := db.SQL(t).QueryRow(`SELECT key_hash, key_prefix FROM api_keys`).Scan(&hash, &prefix); err != nil {
+			t.Fatal(err)
+		}
+		if hash != ids.HashAPIKey(key) || hash == key || len(prefix) >= len(key) {
+			t.Fatalf("stored hash %q prefix %q for key %q", hash, prefix, key)
+		}
+	})
+}
+
+func TestPostgresDSN(t *testing.T) {
+	cfg := config.Default().DB
+	cfg.Password = "p@ss word"
+	for _, schema := range []string{"", "hookd_test_1"} {
+		pc, err := pgx.ParseConfig(store.PostgresDSN(cfg, schema))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pc.Host != cfg.Host || int(pc.Port) != cfg.Port || pc.Database != cfg.Name ||
+			pc.User != cfg.User || pc.Password != cfg.Password {
+			t.Errorf("schema %q: parsed %s@%s:%d/%s", schema, pc.User, pc.Host, pc.Port, pc.Database)
+		}
+		got, ok := pc.RuntimeParams["search_path"]
+		if schema == "" && ok {
+			t.Errorf("search_path = %q, want it unset", got)
+		}
+		if schema != "" && got != schema {
+			t.Errorf("search_path = %q, want %q", got, schema)
+		}
 	}
 }

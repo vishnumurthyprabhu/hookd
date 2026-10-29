@@ -21,6 +21,8 @@ type SQLStore struct {
 	now func() time.Time
 	// idempotencyWindow is how long an event's idempotency key is honoured.
 	idempotencyWindow time.Duration
+	// pgSchema, if set, is the PostgreSQL schema the store works in.
+	pgSchema string
 }
 
 var _ Store = (*SQLStore)(nil)
@@ -40,39 +42,47 @@ func WithIdempotencyWindow(d time.Duration) Option {
 	return func(s *SQLStore) { s.idempotencyWindow = d }
 }
 
+// WithPostgresSchema makes a PostgreSQL store create and use its tables in
+// schema, which must already exist, instead of the user's default search
+// path. Tests use it to give each run a schema of its own. SQLite ignores it.
+func WithPostgresSchema(schema string) Option {
+	return func(s *SQLStore) { s.pgSchema = schema }
+}
+
 // Open connects to the database described by cfg and checks that it can be
 // reached. It does not apply migrations; call Migrate for that.
 func Open(ctx context.Context, cfg config.DB, opts ...Option) (*SQLStore, error) {
+	s := &SQLStore{now: time.Now, idempotencyWindow: config.Default().IdempotencyWindow}
+	for _, opt := range opts {
+		opt(s)
+	}
+
 	var (
-		d        dialect
 		dsn      string
 		maxConns = cfg.MaxConns
 	)
 	switch cfg.Driver {
 	case config.DriverSQLite:
-		d, dsn = sqliteDialect, sqliteDSN(cfg.Path)
+		s.d, dsn = sqliteDialect, sqliteDSN(cfg.Path)
 		if cfg.Path == ":memory:" {
 			// Each connection to :memory: would get its own empty database.
 			maxConns = 1
 		}
 	case config.DriverPostgres:
-		d, dsn = postgresDialect, postgresDSN(cfg)
+		s.d, dsn = postgresDialect, PostgresDSN(cfg, s.pgSchema)
 	default:
 		return nil, fmt.Errorf("store: unknown database driver %q", cfg.Driver)
 	}
 
-	db, err := sql.Open(d.driver, dsn)
+	db, err := sql.Open(s.d.driver, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("store: open %s database: %w", d.name, err)
+		return nil, fmt.Errorf("store: open %s database: %w", s.d.name, err)
 	}
 	if maxConns > 0 {
 		db.SetMaxOpenConns(maxConns)
 		db.SetMaxIdleConns(maxConns)
 	}
-	s := &SQLStore{db: db, d: d, now: time.Now, idempotencyWindow: config.Default().IdempotencyWindow}
-	for _, opt := range opts {
-		opt(s)
-	}
+	s.db = db
 	if err := s.Ping(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -94,13 +104,20 @@ func sqliteDSN(path string) string {
 	return path + "?" + q.Encode()
 }
 
-func postgresDSN(cfg config.DB) string {
+// PostgresDSN returns the connection string for the "pgx" driver described by
+// cfg. If schema is not empty, connections use it as their search path.
+func PostgresDSN(cfg config.DB, schema string) string {
+	q := url.Values{"sslmode": {cfg.SSLMode}}
+	if schema != "" {
+		// pgx sends unknown parameters to the server as settings.
+		q.Set("search_path", schema)
+	}
 	u := url.URL{
 		Scheme:   "postgres",
 		User:     url.UserPassword(cfg.User, cfg.Password),
 		Host:     cfg.Host + ":" + strconv.Itoa(cfg.Port),
 		Path:     "/" + cfg.Name,
-		RawQuery: url.Values{"sslmode": {cfg.SSLMode}}.Encode(),
+		RawQuery: q.Encode(),
 	}
 	if cfg.Password == "" {
 		u.User = url.User(cfg.User)
