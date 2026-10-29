@@ -57,7 +57,7 @@ docker run --rm -d --name hookd-pg -p 5432:5432 \
   postgres:17
 ```
 
-Wait a few seconds for it to start (`docker logs hookd-pg` shows `database system is ready to accept connections`).
+Wait a few seconds for it to start. `docker logs hookd-pg` shows `database system is ready to accept connections` twice: the first time is a temporary server that sets up the user and database and does not take connections on port 5432. The container is ready after `PostgreSQL init process complete; ready for start up.` and the second `ready to accept connections`.
 
 To use a PostgreSQL server you already have instead, create a user and a database it owns, as a superuser in `psql`:
 

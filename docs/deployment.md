@@ -39,6 +39,7 @@ sudo -u postgres psql
 Create a user and a database owned by it. Choose a long random password:
 
 ```sql
+SET password_encryption = 'scram-sha-256';
 CREATE USER hookd WITH PASSWORD 'change-me';
 CREATE DATABASE hookd OWNER hookd;
 REVOKE ALL ON DATABASE hookd FROM PUBLIC;
@@ -48,7 +49,7 @@ GRANT USAGE, CREATE ON SCHEMA public TO hookd;
 \q
 ```
 
-Hookd's tables go in the `public` schema. As the owner of the database, `hookd` can already do all of this on PostgreSQL 15 and later; the grants make it explicit and cover older versions, where `public` belongs to `postgres`.
+Hookd's tables go in the `public` schema. As the owner of the database, `hookd` can already do all of this on PostgreSQL 15 and later; the grants make it explicit and cover older versions, where `public` belongs to `postgres`. The `SET` line makes the password usable with the `scram-sha-256` login of step 3: PostgreSQL 13 stores new passwords as `md5` by default, and a user created that way cannot log in through a `scram-sha-256` line. It changes nothing on PostgreSQL 14 and later, where it is the default.
 
 ## 3. Let the application hosts connect
 
