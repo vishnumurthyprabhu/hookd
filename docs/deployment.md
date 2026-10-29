@@ -3,17 +3,17 @@
 
 ## What it is
 
-Hookd sends webhooks on behalf of an application. Its users register their customers' endpoints (URLs) over a JSON HTTP API, choose which event types each endpoint receives, and send events. Hookd stores each event, delivers it in the background to every subscribed endpoint with an HTTP POST, and signs it under the Standard Webhooks spec (an open specification for signed webhooks: `webhook-id`, `webhook-timestamp` and `webhook-signature` headers, HMAC-SHA256), so receivers can check it with an existing library. In this version each delivery is attempted once, with a 15 second timeout and no redirects followed; failures are recorded, not retried.
+Hookd sends webhooks on behalf of an application. Its users register their customers' endpoints (URLs) over a JSON HTTP API, choose which event types each endpoint receives, and send events. Hookd stores each event, delivers it in the background to every subscribed endpoint with an HTTP POST, and signs it under the Standard Webhooks spec (an open specification for signed webhooks: `webhook-id`, `webhook-timestamp` and `webhook-signature` headers, HMAC-SHA256), so receivers can check it with an existing library. Each attempt has a 15 second timeout and follows no redirects. A failed delivery is retried on a backoff schedule for about a day (8 attempts by default), every attempt is recorded, and events are deleted with their history after 30 days.
 
-What is deployed is one program, the `hookd` binary, run as `hookd serve`: it is the HTTP API, a browser admin UI under `/admin` and the delivery workers in one process. The admin UI has no sign-in, so in production it must be turned off or kept reachable only by trusted people (see [Keep the admin UI private](#keep-the-admin-ui-private)). The same binary also has the operator commands (`migrate`, `account create`, `apikey create`, `apikey list`, `apikey revoke`). Its only outside component is the database: a SQLite file locally (nothing to install), PostgreSQL in production. The database is also the delivery queue: instances claim deliveries with `FOR UPDATE SKIP LOCKED`, so they never send the same delivery at the same time, and nothing else (no cache, no broker, no file store) is needed.
+What is deployed is one program, the `hookd` binary, run as `hookd serve`: it is the HTTP API, a browser admin UI under `/admin` and the delivery workers in one process. The admin UI has no sign-in, so in production it must be turned off or kept reachable only by trusted people (see [Keep the admin UI private](#keep-the-admin-ui-private)). The same binary also has the operator commands (`migrate`, `account create`, `apikey create`, `apikey list`, `apikey revoke`). Its only outside component is the database: a SQLite file locally (nothing to install), PostgreSQL in production. The database is also the delivery queue, including the retries waiting for their time: instances claim due deliveries with `FOR UPDATE SKIP LOCKED`, so they never send the same delivery at the same time, and nothing else (no cache, no broker, no file store, no scheduler) is needed.
 
 ## Components
 
-- **hookd serve** (the project's own code, Go): the HTTP API on port 8080 (bearer API key authentication; every account sees only its own objects) and a pool of delivery workers in the same process. The API wakes the workers after each accepted event; idle workers also poll the database every second to pick up work left after a restart or by another instance. Workers claim a delivery with a lease, sign it, POST it once and record the result.
-- **Admin UI** (the project's own code, Go, part of `hookd serve`): server-rendered pages under `/admin` on the same port, with no JavaScript framework and no files outside the binary. It creates accounts and API keys, manages endpoints, sends events, shows deliveries, and changes seven settings while Hookd runs. It has no sign-in. On by default; `HOOKD_ADMIN_UI=false` turns it off.
+- **hookd serve** (the project's own code, Go): the HTTP API on port 8080 (bearer API key authentication; every account sees only its own objects) and a pool of delivery workers in the same process. The API wakes the workers after each accepted event; idle workers also poll the database every second to pick up work left after a restart or by another instance. Workers claim a due delivery with a lease, sign it, POST it and record the attempt; a failed attempt is put back with the time of its retry (`HOOKD_RETRY_SCHEDULE`), so waiting retries hold no worker. A retention runner in the same process deletes events older than `HOOKD_RETENTION` (30 days) with their deliveries and attempts, once an hour, in batches of 500.
+- **Admin UI** (the project's own code, Go, part of `hookd serve`): server-rendered pages under `/admin` on the same port, with no JavaScript framework and no files outside the binary. It creates accounts and API keys, manages endpoints, sends events, shows deliveries and every attempt, and changes eight settings while Hookd runs. It has no sign-in. On by default; `HOOKD_ADMIN_UI=false` turns it off.
 - **Built-in test receiver** (the project's own code, Go, part of the admin UI): `POST /admin/test-receiver/trcv_...`, the URL of each test endpoint created in the UI. It checks each request's signature with the official Standard Webhooks Go library, records the request in the database and answers with the status set in the UI. The delivery workers reach it over loopback on their own instance.
 - **hookd operator commands** (the project's own code, Go, same binary): `hookd migrate` applies the database migrations, which are built into the binary; `hookd account create`, `hookd apikey create`, `hookd apikey list` and `hookd apikey revoke` manage accounts and their API keys. They are run by hand from a shell with the same settings as `serve`; they are not services.
-- **PostgreSQL** (used, production): holds all state and is the delivery queue. PostgreSQL 13 or later.
+- **PostgreSQL** (used, production): holds all state and is the delivery queue, waiting retries included. PostgreSQL 13 or later.
 - **SQLite** (used, local only): a single database file, `./hookd.db` by default, opened through a pure Go driver built into the binary, so nothing is installed. For one instance only.
 - **Load balancer or reverse proxy** (used, production): terminates TLS in front of the instances, since Hookd serves plain HTTP. Any HTTP load balancer works; nginx is the example below.
 - **testreceiver** (the project's own code, Go, development only, not deployed): a small separate webhook receiver that checks each request's signature with the official Standard Webhooks Go library and logs whether it verified. It listens on `127.0.0.1:9000`. The built-in test receiver does the same job from the admin UI.
@@ -53,7 +53,7 @@ What is deployed is one program, the `hookd` binary, run as `hookd serve`: it is
 
 - Load balancer → hookd serve: plain HTTP to port 8080 on each instance; no sticky sessions, for the API and the admin UI alike; health check on `GET /healthz`. The load balancer should let `/admin` through only from the admins' network, or not at all.
 - hookd serve → itself: deliveries to test endpoints created in the admin UI go to the built-in test receiver over loopback, `http://127.0.0.1:8080/admin/test-receiver/...` by default (`HOOKD_ADMIN_RECEIVER_URL` changes it). They do not pass through the load balancer.
-- hookd serve → receivers: outbound connections that each instance opens to whatever URL a customer registered, on the port in that URL; one POST per delivery, 15 s timeout, redirects not followed.
+- hookd serve → receivers: outbound connections that each instance opens to whatever URL a customer registered, on the port in that URL; one POST per attempt, 15 s timeout, redirects not followed; a failed delivery is attempted again later, possibly by another instance.
 - Operator shell → PostgreSQL: the operator commands connect straight to the database with the same `HOOKD_DB_*` settings; they do not go through the API.
 
 ## Tech stack
@@ -62,7 +62,7 @@ What is deployed is one program, the `hookd` binary, run as `hookd serve`: it is
 - **PostgreSQL 13 or later**: the production database and delivery queue.
 - **SQLite** through `modernc.org/sqlite` v1.61.0: a pure Go SQLite driver (no cgo, no C compiler), used for the local database file.
 - **pgx** `github.com/jackc/pgx/v5` v5.11.0: the PostgreSQL driver.
-- **ULID** `github.com/oklog/ulid/v2` v2.1.2: time-sortable IDs, prefixed by type (`acct_`, `ep_`, `msg_`, `key_`, and `trcv_` and `treq_` for test receivers and their requests).
+- **ULID** `github.com/oklog/ulid/v2` v2.1.2: time-sortable IDs, prefixed by type (`acct_`, `ep_`, `msg_`, `key_`, `dlv_`, `att_`, and `trcv_` and `treq_` for test receivers and their requests).
 - **Standard Webhooks Go library** `github.com/standard-webhooks/standard-webhooks/libraries` v0.0.1: verifies signatures in the built-in test receiver, the tests and `cmd/testreceiver`. Production signing is Hookd's own code, so the check stays independent of it.
 - **Admin UI**: Go's `html/template` and `embed`, with plain HTML forms, one CSS file and a small script for the copy buttons, all built into the binary. Cross-site form posts are refused with the standard library's `http.CrossOriginProtection`. No Node.js and no build step.
 
@@ -122,7 +122,7 @@ go run ./cmd/hookd serve
 curl -s http://localhost:8080/healthz
 ```
 
-On SIGTERM (or Ctrl-C), Hookd stops accepting requests, gives requests in flight up to 10 seconds to finish, and lets each worker finish the delivery it is sending (up to `HOOKD_DELIVERY_TIMEOUT`).
+On SIGTERM (or Ctrl-C), Hookd stops accepting requests, gives requests in flight up to 10 seconds to finish, stops the retention runner after its current batch, and lets each worker finish the delivery it is sending (up to `HOOKD_DELIVERY_TIMEOUT`). Retries waiting for their time stay in the database and are sent by whichever instance is running when they come due.
 
 **Operator commands** (run, print and exit; no port):
 
@@ -146,7 +146,7 @@ go run ./cmd/testreceiver --secret whsec_...
 
 Hookd reads its settings from environment variables. Every setting has a default that works locally, so `hookd serve` runs with none set. A variable that is unset or empty keeps its default. The settings apply to every command (`serve`, `migrate`, `account create`, `apikey create`, `apikey list`, `apikey revoke`), so the operator commands must be run with the same `HOOKD_DB_*` settings as `serve`.
 
-Seven settings, marked "Also in the UI" in the table below, can also be changed on the admin UI's Settings page while Hookd runs. A value saved there is stored in the database, overrides the environment variable on every instance, and reaches every instance within 5 seconds; **Reset** on that page goes back to the environment or default value. Only `serve` uses these saved values. Every other setting is environment-only and needs a restart to change. [Settings changed in the admin UI](#settings-changed-in-the-admin-ui) below has the details.
+Eight settings, marked "Also in the UI" in the table below, can also be changed on the admin UI's Settings page while Hookd runs. A value saved there is stored in the database, overrides the environment variable on every instance, and reaches every instance within 5 seconds; **Reset** on that page goes back to the environment or default value. Only `serve` uses these saved values. Every other setting is environment-only and needs a restart to change. [Settings changed in the admin UI](#settings-changed-in-the-admin-ui) below has the details.
 
 Hookd checks every setting when it starts. If any is invalid it names each bad one and exits without doing anything:
 
@@ -178,27 +178,30 @@ hookd: invalid configuration:
 | `HOOKD_LOG_FORMAT` | Log format: `text` or `json`. | no | `text` | no |
 | `HOOKD_ADMIN_UI` | Serve the admin UI and the built-in test receiver under `/admin`: `true` or `false`. When `false`, `/` and `/admin` answer 404; the API and `/healthz` are not affected. The UI has no sign-in. | `false` on instances reachable from untrusted networks, unless `/admin` is restricted at the load balancer | `true` | no |
 | `HOOKD_ADMIN_RECEIVER_URL` | Base URL that the delivery workers use to reach the built-in test receiver, put in new test endpoints' URLs. Empty means `http://127.0.0.1:<port>` when `HOOKD_LISTEN_ADDR` listens on every interface, or `http://<host>:<port>` when it names a host. See [When to set the receiver URL](#when-to-set-the-receiver-url). | in some setups | empty | no |
+| `HOOKD_RETRY_SCHEDULE` | Waits before each retry of a failed delivery, counted from the previous attempt, as comma-separated durations; at most 20. `none` means no retries. Each wait is varied at random by up to 10%. Also in the UI. See [Retries](configuration.md#retries). | no | `5s,5m,30m,2h,5h,10h,10h` (8 attempts over about 27½ hours) | no |
+| `HOOKD_RETENTION` | How long events, with their deliveries and attempts, are kept before they are deleted. Must be longer than `HOOKD_IDEMPOTENCY_WINDOW` and than the total of `HOOKD_RETRY_SCHEDULE` plus 10%; Hookd refuses to start otherwise. Environment only. See [Retention](configuration.md#retention). | no | `720h` (30 days) | no |
 | `PGSSLROOTCERT` | Standard PostgreSQL variable, read by the PostgreSQL driver: the CA certificate file to trust for the database's certificate, when it is signed by your own CA. Without it the host's system CA certificates are trusted. | only with a private CA | unset | no |
 
 Durations are Go durations, such as `500ms`, `15s`, `5m` or `24h`, and must be greater than zero. Choices such as `postgres` or `json` may be written in any case. Booleans accept `true`, `false`, `1` and `0`.
 
-Hookd logs to standard error: one line per API or admin UI request (method, path and status), one per delivery, and one per startup step. API keys, signing secrets, `Authorization` headers, and the headers and bodies that the built-in test receiver records are never logged. Use `HOOKD_LOG_FORMAT=json` when the logs go to a log collector.
+Hookd logs to standard error: one line per API or admin UI request (method, path and status), one per delivery attempt (`delivery attempt`, with the attempt number, outcome and, if it is retried, `next_attempt_at`), one per retention run (`deleted expired events`), and one per startup step. API keys, signing secrets, `Authorization` headers, and the headers and bodies that the built-in test receiver records are never logged. Use `HOOKD_LOG_FORMAT=json` when the logs go to a log collector.
 
 The test receiver takes flags instead of environment variables: `--secret` (endpoint signing secret, `whsec_...`, required, a secret), `--addr` (default `127.0.0.1:9000`) and `--status` (default `200`).
 
 ## Data
 
-All of Hookd's state is in the database: accounts, API key hashes, endpoints with their signing secrets, events, delivery status, the settings saved in the admin UI, and the requests received by the built-in test receiver. There is no other file or store.
+All of Hookd's state is in the database: accounts, API key hashes, endpoints with their signing secrets, events, delivery status, every delivery attempt, the settings saved in the admin UI, and the requests received by the built-in test receiver. There is no other file or store.
 
-Tables, created by the built-in migrations (`0001_init`, and `0002_admin` for the last three before `schema_migrations`):
+Tables, created by the built-in migrations (`0001_init`; `0002_admin` for `settings`, `test_receivers` and `test_requests`; `0003_retries` for `attempts` and the retry columns of `deliveries`):
 
 | Table | What it holds |
 |---|---|
 | `accounts` | ID (`acct_…`), name, creation time |
 | `api_keys` | ID (`key_…`), account, SHA-256 hash of the key, its first characters, creation time. The key itself is shown once, at creation, and not stored. |
 | `endpoints` | ID (`ep_…`), account, URL, description, event types (JSON array as text), enabled flag, signing secret (stored as is, because signing needs it), timestamps, soft-delete time |
-| `events` | ID (`msg_…`), account, event type, payload (text, exactly as received), idempotency key, creation time |
-| `deliveries` | one row per event and endpoint: status (`pending`, `in_progress`, `succeeded`, `failed`), response status, error, latency, attempt time, lease time. This table is the work queue. |
+| `events` | ID (`msg_…`), account, event type, payload (text, exactly as received), idempotency key, creation time. Deleted, with their deliveries and attempts, `HOOKD_RETENTION` (30 days) after creation. |
+| `deliveries` | ID (`dlv_…`), one row per event and endpoint: status (`pending`, `in_progress`, `succeeded`, `failed`), the number of attempts, when the next attempt is due, the last attempt's response status, error, latency and time, lease time. This table is the work queue; a delivery waiting for a retry is `pending` with a later due time. |
+| `attempts` | ID (`att_…`), one row per attempt: account, delivery, event, endpoint, attempt number, start time, outcome (`succeeded` or `failed`), response status, latency, error |
 | `settings` | the setting values saved in the admin UI: name, value, update time. No row means the environment or the default applies. |
 | `test_receivers` | ID (`trcv_…`), account, the test endpoint it belongs to, the status it answers with, creation time |
 | `test_requests` | ID (`treq_…`), receiver, time, `webhook-id`, event type, the request's headers and body, whether the signature verified and why not, the status answered. Only the newest 100 per test endpoint are kept, and they are deleted with the endpoint. |
@@ -233,6 +236,7 @@ Tables, created by the built-in migrations (`0001_init`, and `0002_admin` for th
    ```
    level=INFO msg="applied migration" version=0001_init
    level=INFO msg="applied migration" version=0002_admin
+   level=INFO msg="applied migration" version=0003_retries
    level=INFO msg=listening addr=[::]:8080
    ```
 
@@ -241,7 +245,8 @@ Tables, created by the built-in migrations (`0001_init`, and `0002_admin` for th
    - Click **Endpoints**, then **New test endpoint**. In **Event types**, enter `order.paid`, leave **Answer status** at `200`, and click **Create test endpoint**. Its URL is `http://127.0.0.1:8080/admin/test-receiver/trcv_...`, Hookd's built-in receiver.
    - Go back to the account, click **Events**, then **Send an event**. Enter the event type `order.paid` and the payload `{"order_id": "1001", "amount": 4200}`, and click **Send event**.
    - On the event's page, the delivery shows `pending` and then `succeeded` with HTTP status `200`. Click the endpoint's URL in the delivery row: under **Received requests** the request is listed as **signature verified**.
-   - **Settings** at the top of any page shows the database's health, pending deliveries and every setting with where its value comes from.
+   - **Settings** at the top of any page shows the database's health, pending deliveries, deliveries waiting for a retry, and every setting with where its value comes from.
+   - To watch a retry, set `HOOKD_RETRY_SCHEDULE` to `5s,10s,20s` on the Settings page, set the test endpoint's **Answer status** to `500` and send another event: the event's page shows each failed attempt and the time of the next retry. Set the answer status back to `200` before the next retry and it succeeds. [Watch a retry](../README.md#8-watch-a-retry) has the details.
 
 5. Or use the API instead. Check that Hookd is up (terminal 2):
 
@@ -301,6 +306,8 @@ Stop Hookd with Ctrl-C. To start again from an empty database, delete `hookd.db`
 | Admin UI | on, at http://localhost:8080/ | off on instances reachable from untrusted networks, or `/admin` restricted at the load balancer; it has no sign-in | `HOOKD_ADMIN_UI=false` |
 | Test receiver | the built-in one (test endpoints in the admin UI), reached at `http://127.0.0.1:8080`; or `go run ./cmd/testreceiver` | the built-in one, if the admin UI is on: each instance reaches itself over loopback, and the received requests are stored in PostgreSQL, so every instance shows them. `cmd/testreceiver` is not deployed. | `HOOKD_ADMIN_RECEIVER_URL` |
 | Settings saved in the admin UI | stored in SQLite | stored in PostgreSQL and picked up by every instance within 5 s | none |
+| Waiting retries | rows in SQLite, sent by the one instance | rows in PostgreSQL, claimed by whichever instance is free when they are due (`SKIP LOCKED`) | `HOOKD_DB_DRIVER=postgres` |
+| Retention | runs in the one instance | runs in every instance; `SKIP LOCKED` keeps them on different events | `HOOKD_DB_DRIVER=postgres` |
 
 ## Production needs
 
@@ -308,7 +315,11 @@ Stop Hookd with Ctrl-C. To start again from an empty database, delete `hookd.db`
 
 **More than one copy.** Yes, on PostgreSQL: run as many identical instances as needed behind any HTTP load balancer, with no sticky sessions. Do not run more than one instance on SQLite. SQLite is for local use. Each instance opens up to `HOOKD_DB_MAX_CONNS` connections (10 by default), so make sure PostgreSQL's `max_connections` covers every instance with room to spare. Migrations take a database lock, so two runs at once cannot both apply the same migration.
 
-**Delivery guarantee.** A delivery cut off by a crash is sent again by another worker once its lease (`HOOKD_DELIVERY_LEASE`) runs out, so receivers can get a duplicate and should drop repeats by `webhook-id`.
+**Delivery guarantee.** A failed delivery is retried on `HOOKD_RETRY_SCHEDULE`, and a delivery cut off by a crash is sent again by another worker once its lease (`HOOKD_DELIVERY_LEASE`) runs out, so receivers can get the same event more than once and should drop repeats by `webhook-id`.
+
+**Retries and retention with several instances.** Nothing has to be set up for either. A waiting retry is a row in `deliveries` with the time it is due; any instance's idle workers find it within `HOOKD_POLL_INTERVAL` (1 s) of that time and claim it with `SKIP LOCKED`, so it is sent by exactly one instance (apart from the crash case above). Retries survive restarts and deploys: one that came due while every instance was down is sent soon after the first one starts. Each attempt and the scheduling of the next one are stored in one transaction. Every instance runs the retention deletion once an hour, in batches of 500 events, each one short transaction; on PostgreSQL concurrent runs skip each other's locked events, so they share the work rather than block. Change `HOOKD_RETRY_SCHEDULE` on the Settings page (it reaches every instance within 5 s) or in every instance's environment; set `HOOKD_RETENTION` to the same value on every instance, since each one deletes by its own value.
+
+**Database size.** With retries on, each delivery stores up to 8 attempt rows. Events and their rows are deleted after `HOOKD_RETENTION`, so the database holds about 30 days of traffic; size the PostgreSQL disk for that.
 
 **Secrets to supply.** `HOOKD_DB_PASSWORD`. The database itself holds secrets (endpoint signing secrets and API key hashes), and API keys printed by `hookd account create` and `hookd apikey create`, or shown once in the admin UI, must be handed to customers over a secure channel.
 
@@ -442,9 +453,10 @@ hookd migrate
 ```
 applied 0001_init
 applied 0002_admin
+applied 0003_retries
 ```
 
-`0001_init` creates the API's tables and `0002_admin` the admin UI's (`settings`, `test_receivers`, `test_requests`) and an index on `events`. On a database of an earlier Hookd version, which has only `0001_init`, it prints just `applied 0002_admin`. Run it again at every deploy, before starting the new version. When there is nothing to do it says `database is up to date`. Migrations take a database lock, so two runs at once cannot both apply the same migration. If you would rather not have a separate step, leave `HOOKD_AUTO_MIGRATE=true` and each instance applies them, `0002_admin` included, when it starts. With `HOOKD_AUTO_MIGRATE=false` and a migration not yet applied, the admin UI's Settings page lists it under Health as not applied.
+`0001_init` creates the API's tables, `0002_admin` the admin UI's (`settings`, `test_receivers`, `test_requests`) and an index on `events`, and `0003_retries` the `attempts` table, the `attempts` and `next_attempt_at` columns of `deliveries`, and their indexes. On a database of an earlier Hookd version it applies only the ones that are missing: `applied 0003_retries` alone on a database from the version with the admin UI. `0003_retries` keeps all existing data: each existing delivery is due from its creation time, and each finished one gets one attempt row built from its recorded outcome, so the attempt lists show the history from before the upgrade too. It reads and writes every row of `deliveries`, so on a large table it takes a while and holds a lock on it; see [Upgrading](#upgrading). Run it again at every deploy, before starting the new version. When there is nothing to do it says `database is up to date`. Migrations take a database lock, so two runs at once cannot both apply the same migration. If you would rather not have a separate step, leave `HOOKD_AUTO_MIGRATE=true` and each instance applies them, `0002_admin` included, when it starts. With `HOOKD_AUTO_MIGRATE=false` and a migration not yet applied, the admin UI's Settings page lists it under Health as not applied.
 
 ### 7. Run the instances
 
@@ -545,7 +557,7 @@ It must be an absolute `http` or `https` URL, such as `http://10.0.1.11:8080`. I
 
 ### Settings changed in the admin UI
 
-Values saved on the admin UI's Settings page (the seven marked "Also in the UI" under Configuration) are stored in the `settings` table and override the environment on every instance. The instance where a value is saved applies it at once, and every other instance reads the table every 5 seconds, so a change reaches all of them within 5 s, with no restart. If a saved value is invalid together with one instance's own environment (for example a saved `HOOKD_DELIVERY_TIMEOUT` longer than that instance's `HOOKD_DELIVERY_LEASE`), that instance keeps its last valid configuration, logs an error, and shows the problem on its Settings page. Keep the environment files of all instances the same to avoid this.
+Values saved on the admin UI's Settings page (the eight marked "Also in the UI" under Configuration) are stored in the `settings` table and override the environment on every instance. The instance where a value is saved applies it at once, and every other instance reads the table every 5 seconds, so a change reaches all of them within 5 s, with no restart. If a saved value is invalid together with one instance's own environment (for example a saved `HOOKD_DELIVERY_TIMEOUT` longer than that instance's `HOOKD_DELIVERY_LEASE`), that instance keeps its last valid configuration, logs an error, and shows the problem on its Settings page. Keep the environment files of all instances the same to avoid this.
 
 The values stay in the database across restarts and deploys. To go back to the environment file's value, click **Reset** on the Settings page. With the UI off, saved values still apply; to remove one without the UI, delete its row: `DELETE FROM settings WHERE name = 'HOOKD_WORKERS';`.
 
@@ -615,9 +627,18 @@ From then on, requests with that key get `401`. The account's other keys, endpoi
 ### Upgrading
 
 1. Build the new binary and copy it to each host.
-2. Run `hookd migrate` once. Upgrading from the version without the admin UI, it applies `0002_admin`. Older instances keep working with it while they are replaced. Before restarting, add `HOOKD_ADMIN_UI=false` to the environment file, or restrict `/admin` at the load balancer, since the new version serves the UI by default.
+2. Run `hookd migrate` once, as in step 6. Upgrading from the version without the admin UI, it applies `0002_admin` too. Before restarting, add `HOOKD_ADMIN_UI=false` to the environment file, or restrict `/admin` at the load balancer, since the new version serves the UI by default.
 3. Restart the instances one at a time (`sudo systemctl restart hookd`), checking `/healthz` after each.
+
+Upgrading to the version with retries (migration `0003_retries`) from an earlier one is not a rolling upgrade: instances of the earlier version cannot accept events once `0003_retries` is applied (their insert into `deliveries` lacks the new `next_attempt_at` column, so `POST /v1/events` answers 500), and their workers would not respect retry times. Plan a short stop:
+
+1. Build the new binary and copy it to each host.
+2. Stop every instance: `sudo systemctl stop hookd` on each host. Deliveries in flight are finished first.
+3. From one host, with the settings loaded, run `hookd migrate`. It prints `applied 0003_retries`. On a large `deliveries` table this can take a while.
+4. Start every instance (`sudo systemctl start hookd`) and check `/healthz` on each.
+
+While the instances are stopped the API is down, so senders get errors from the load balancer and should retry. Nothing is lost in the database: pending deliveries are sent once the new instances start. From then on, failed deliveries are retried on the default schedule unless `HOOKD_RETRY_SCHEDULE` says otherwise, and events older than 30 days are deleted from about a minute after the first instance starts; set `HOOKD_RETENTION` first if you need to keep them longer.
 
 ### Backups
 
-All of Hookd's state is in the PostgreSQL database: accounts, API key hashes, endpoints with their signing secrets, events, delivery status, the settings saved in the admin UI and the test receiver's requests. Back it up like any PostgreSQL database (for example with `pg_dump` or continuous archiving), and protect the backups as secrets, because they contain the signing secrets.
+All of Hookd's state is in the PostgreSQL database: accounts, API key hashes, endpoints with their signing secrets, events, delivery status and attempts, the settings saved in the admin UI and the test receiver's requests. Events older than `HOOKD_RETENTION` are deleted, from the database and so from later backups; keep older backups if you need history beyond that. Back it up like any PostgreSQL database (for example with `pg_dump` or continuous archiving), and protect the backups as secrets, because they contain the signing secrets.
