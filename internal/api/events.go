@@ -42,6 +42,14 @@ type deliveryResponse struct {
 	// ResponseStatus is the endpoint's HTTP status, or null if there was none.
 	ResponseStatus *int   `json:"response_status"`
 	Error          string `json:"error,omitempty"`
+	// Attempts is the number of attempts made so far.
+	Attempts int `json:"attempts"`
+	// LastAttemptAt is when the last attempt started, or null if none has
+	// been made.
+	LastAttemptAt *time.Time `json:"last_attempt_at"`
+	// NextAttemptAt is when the next retry is due, or null when none is
+	// waiting.
+	NextAttemptAt *time.Time `json:"next_attempt_at"`
 }
 
 func newEventResponse(e store.Event) eventResponse {
@@ -54,7 +62,14 @@ func newEventResponse(e store.Event) eventResponse {
 		Deliveries:     make([]deliveryResponse, 0, len(e.Deliveries)),
 	}
 	for _, d := range e.Deliveries {
-		dr := deliveryResponse{EndpointID: d.EndpointID, Status: d.Status, Error: d.Error}
+		dr := deliveryResponse{
+			EndpointID:    d.EndpointID,
+			Status:        d.Status,
+			Error:         d.Error,
+			Attempts:      d.Attempts,
+			LastAttemptAt: utcPtr(d.LastAttemptAt),
+			NextAttemptAt: utcPtr(d.NextAttemptAt),
+		}
 		if d.Status == store.DeliveryInProgress {
 			dr.Status = store.DeliveryPending
 		}
@@ -65,6 +80,15 @@ func newEventResponse(e store.Event) eventResponse {
 		out.Deliveries = append(out.Deliveries, dr)
 	}
 	return out
+}
+
+// utcPtr returns t in UTC, or nil if t is nil.
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }
 
 // createEvent handles POST /v1/events (R9, R10). It answers 202 with a new

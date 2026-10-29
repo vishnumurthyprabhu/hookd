@@ -80,8 +80,11 @@ func New(st store.Store, log *slog.Logger, opts ...Option) *Server {
 	s.mux.HandleFunc("PATCH /v1/endpoints/{id}", s.updateEndpoint)
 	s.mux.HandleFunc("DELETE /v1/endpoints/{id}", s.deleteEndpoint)
 	s.mux.HandleFunc("GET /v1/endpoints/{id}/secret", s.getEndpointSecret)
+	s.mux.HandleFunc("GET /v1/endpoints/{id}/attempts", s.listEndpointAttempts)
 	s.mux.HandleFunc("POST /v1/events", s.createEvent)
 	s.mux.HandleFunc("GET /v1/events/{id}", s.getEvent)
+	s.mux.HandleFunc("GET /v1/events/{id}/attempts", s.listEventAttempts)
+	s.mux.HandleFunc("GET /v1/attempts/{id}", s.getAttempt)
 	return s
 }
 

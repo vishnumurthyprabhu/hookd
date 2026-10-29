@@ -125,15 +125,9 @@ func (s *Server) listEndpoints(w http.ResponseWriter, r *http.Request) {
 	acct, _ := accountFrom(r.Context())
 
 	q := r.URL.Query()
-	limit := defaultListLimit
-	if v := q.Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > maxListLimit {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest,
-				fmt.Sprintf("limit must be a whole number from 1 to %d", maxListLimit))
-			return
-		}
-		limit = n
+	limit, ok := parseLimit(w, q.Get("limit"))
+	if !ok {
+		return
 	}
 
 	// Ask for one more than the page holds to learn whether there are more.
@@ -152,6 +146,22 @@ func (s *Server) listEndpoints(w http.ResponseWriter, r *http.Request) {
 		out.Data = append(out.Data, newEndpointResponse(e))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// parseLimit reads the "limit" query parameter of a paged list: empty means
+// defaultListLimit. If v is not a valid limit, it answers 400 and returns
+// false.
+func parseLimit(w http.ResponseWriter, v string) (int, bool) {
+	if v == "" {
+		return defaultListLimit, true
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > maxListLimit {
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest,
+			fmt.Sprintf("limit must be a whole number from 1 to %d", maxListLimit))
+		return 0, false
+	}
+	return n, true
 }
 
 // getEndpoint handles GET /v1/endpoints/{id} (R6). The secret is left out.
