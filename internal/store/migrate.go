@@ -51,7 +51,25 @@ func (s *SQLStore) Migrate(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.db.ExecContext(ctx, s.d.createMigrationsTable); err != nil {
+	lock := func(tx *sql.Tx) error {
+		if s.d.lockMigrations == "" {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, s.d.lockMigrations); err != nil {
+			return fmt.Errorf("lock: %w", err)
+		}
+		return nil
+	}
+	// The table is created under the lock too: on PostgreSQL two concurrent
+	// CREATE TABLE IF NOT EXISTS can both try to create it, and one fails.
+	err = s.inTx(ctx, func(tx *sql.Tx) error {
+		if err := lock(tx); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, s.d.createMigrationsTable)
+		return err
+	})
+	if err != nil {
 		return nil, fmt.Errorf("store: create schema_migrations: %w", err)
 	}
 
@@ -59,10 +77,8 @@ func (s *SQLStore) Migrate(ctx context.Context) ([]string, error) {
 	for _, m := range ms {
 		ran := false
 		err := s.inTx(ctx, func(tx *sql.Tx) error {
-			if s.d.lockMigrations != "" {
-				if _, err := tx.ExecContext(ctx, s.d.lockMigrations); err != nil {
-					return fmt.Errorf("lock: %w", err)
-				}
+			if err := lock(tx); err != nil {
+				return err
 			}
 			var v string
 			err := s.queryRow(ctx, tx, `SELECT version FROM schema_migrations WHERE version = ?`, m.version).Scan(&v)

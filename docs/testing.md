@@ -77,7 +77,7 @@ HOOKD_TEST_PG=1 \
 HOOKD_DB_HOST=localhost HOOKD_DB_PORT=5432 \
 HOOKD_DB_NAME=hookd HOOKD_DB_USER=hookd HOOKD_DB_PASSWORD=hookd \
 HOOKD_DB_SSLMODE=disable \
-go test -count=1 -v ./internal/store/ 2>&1 | grep postgres
+go test -count=1 -v ./internal/store/ 2>&1 | grep -- '--- .*/postgres'
 ```
 
 Every store test now also runs as a `/postgres` subtest, and each line should say `PASS`:
@@ -87,7 +87,7 @@ Every store test now also runs as a `/postgres` subtest, and each line should sa
     ...
 ```
 
-Drop the `| grep postgres` to see the whole run, or use `go test ./...` to run everything else as well. Each PostgreSQL test creates its own schema, named `hookd_test_<random>`, and drops it when it ends, so the database is left as it was and runs can share it. If a run is killed part way, left-over `hookd_test_*` schemas can be dropped by hand.
+Drop the `| grep ...` to see the whole run, or use `go test ./...` to run everything else as well. Each PostgreSQL test creates its own schema, named `hookd_test_<random>`, and drops it when it ends, so the database is left as it was and runs can share it. If a run is killed part way, left-over `hookd_test_*` schemas can be dropped by hand.
 
 ### 3. Clean up
 

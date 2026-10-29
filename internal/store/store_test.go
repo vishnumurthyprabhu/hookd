@@ -37,6 +37,45 @@ func TestMigrateTwiceIsNoOp(t *testing.T) {
 	})
 }
 
+func TestMigrateConcurrentlyOnEmptyDatabase(t *testing.T) {
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		const n = 4
+		stores := make([]*store.SQLStore, n)
+		for i := range stores {
+			stores[i] = db.Open(t)
+		}
+		results := make(chan []string, n)
+		errs := make(chan error, n)
+		for _, s := range stores {
+			go func() {
+				applied, err := s.Migrate(ctx)
+				results <- applied
+				errs <- err
+			}()
+		}
+		seen := map[string]bool{}
+		for range n {
+			if err := <-errs; err != nil {
+				t.Errorf("Migrate: %v", err)
+			}
+			for _, v := range <-results {
+				if seen[v] {
+					t.Errorf("migration %s applied twice", v)
+				}
+				seen[v] = true
+			}
+		}
+		if !seen["0001_init"] {
+			t.Errorf("applied %v, want 0001_init among them", seen)
+		}
+		ms, err := stores[0].Migrate(ctx)
+		if err != nil || len(ms) != 0 {
+			t.Fatalf("Migrate afterwards = %v, %v, want nothing to do", ms, err)
+		}
+	})
+}
+
 func TestMigrateCreatesTablesAndRecordsVersions(t *testing.T) {
 	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
 		db.New(t)
