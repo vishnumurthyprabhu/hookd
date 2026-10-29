@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -47,9 +48,23 @@ func loadMigrations(d dialect) ([]migration, error) {
 // together with the row that records it, so a failed migration leaves no
 // trace and is tried again next time.
 func (s *SQLStore) Migrate(ctx context.Context) ([]string, error) {
+	return s.migrateThrough(ctx, "")
+}
+
+// migrateThrough is Migrate, but stops after the migration with version
+// last. An empty last applies every migration. Tests use it to build a
+// database at an older version.
+func (s *SQLStore) migrateThrough(ctx context.Context, last string) ([]string, error) {
 	ms, err := loadMigrations(s.d)
 	if err != nil {
 		return nil, err
+	}
+	if last != "" {
+		i := slices.IndexFunc(ms, func(m migration) bool { return m.version == last })
+		if i < 0 {
+			return nil, fmt.Errorf("store: unknown migration %s", last)
+		}
+		ms = ms[:i+1]
 	}
 	lock := func(tx *sql.Tx) error {
 		if s.d.lockMigrations == "" {
@@ -106,4 +121,42 @@ func (s *SQLStore) Migrate(ctx context.Context) ([]string, error) {
 		}
 	}
 	return applied, nil
+}
+
+// PendingMigrations implements Store. It only reads, so it can run while
+// another instance migrates; the answer may then be out of date at once.
+func (s *SQLStore) PendingMigrations(ctx context.Context) ([]string, error) {
+	ms, err := loadMigrations(s.d)
+	if err != nil {
+		return nil, err
+	}
+	applied := map[string]bool{}
+	var exists bool
+	if err := s.queryRow(ctx, s.db, s.d.migrationsTableExists).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("store: pending migrations: %w", err)
+	}
+	if exists {
+		rows, err := s.query(ctx, s.db, `SELECT version FROM schema_migrations`)
+		if err != nil {
+			return nil, fmt.Errorf("store: pending migrations: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				return nil, fmt.Errorf("store: pending migrations: %w", err)
+			}
+			applied[v] = true
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("store: pending migrations: %w", err)
+		}
+	}
+	pending := []string{}
+	for _, m := range ms {
+		if !applied[m.version] {
+			pending = append(pending, m.version)
+		}
+	}
+	return pending, nil
 }

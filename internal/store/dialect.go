@@ -18,6 +18,9 @@ type dialect struct {
 	migrationsDir string
 	// createMigrationsTable creates the table recording applied migrations.
 	createMigrationsTable string
+	// migrationsTableExists returns one boolean row: whether the table made
+	// by createMigrationsTable exists.
+	migrationsTableExists string
 	// lockMigrations, if set, is run at the start of each migration's
 	// transaction so that several instances do not migrate at once.
 	lockMigrations string
@@ -44,6 +47,9 @@ var sqliteDialect = dialect{
 		version    TEXT PRIMARY KEY,
 		applied_at TEXT NOT NULL
 	)`,
+	migrationsTableExists: `SELECT EXISTS (
+		SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'
+	)`,
 	// SQLite allows one writer at a time, so a single UPDATE … RETURNING is
 	// atomic.
 	claimDelivery: `UPDATE deliveries SET status = 'in_progress', locked_until = ?
@@ -65,7 +71,10 @@ var postgresDialect = dialect{
 		version    TEXT PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL
 	)`,
-	lockMigrations: `SELECT pg_advisory_xact_lock(7238465100)`,
+	// to_regclass looks the name up on the search path, like the CREATE
+	// TABLE above.
+	migrationsTableExists: `SELECT to_regclass('schema_migrations') IS NOT NULL`,
+	lockMigrations:        `SELECT pg_advisory_xact_lock(7238465100)`,
 	// SKIP LOCKED lets several instances share the queue without claiming
 	// the same row.
 	claimDelivery: `UPDATE deliveries SET status = 'in_progress', locked_until = ?

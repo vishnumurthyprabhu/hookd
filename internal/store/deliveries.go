@@ -107,3 +107,33 @@ func (s *SQLStore) RecordDeliveryResult(ctx context.Context, deliveryID string, 
 	}
 	return nil
 }
+
+// CountDeliveriesByStatus implements Store. The (status, locked_until) index
+// covers the query.
+func (s *SQLStore) CountDeliveriesByStatus(ctx context.Context) (map[string]int, error) {
+	counts := map[string]int{
+		DeliveryPending:    0,
+		DeliveryInProgress: 0,
+		DeliverySucceeded:  0,
+		DeliveryFailed:     0,
+	}
+	rows, err := s.query(ctx, s.db, `SELECT status, count(*) FROM deliveries GROUP BY status`)
+	if err != nil {
+		return nil, fmt.Errorf("store: count deliveries: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			status string
+			n      int
+		)
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, fmt.Errorf("store: count deliveries: %w", err)
+		}
+		counts[status] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: count deliveries: %w", err)
+	}
+	return counts, nil
+}

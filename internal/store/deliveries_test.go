@@ -350,3 +350,48 @@ func TestGetDeliveryJob(t *testing.T) {
 		}
 	})
 }
+
+func TestCountDeliveriesByStatus(t *testing.T) {
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		s := db.New(t)
+		count := func(want map[string]int) {
+			t.Helper()
+			got, err := s.CountDeliveriesByStatus(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("CountDeliveriesByStatus = %v, want %v", got, want)
+			}
+		}
+		count(map[string]int{
+			store.DeliveryPending: 0, store.DeliveryInProgress: 0, store.DeliverySucceeded: 0, store.DeliveryFailed: 0,
+		})
+
+		// Two accounts with three endpoints between them: five deliveries.
+		a, _ := s.CreateAccount(ctx, "a")
+		b, _ := s.CreateAccount(ctx, "b")
+		mustEndpoint(t, s, a.ID, store.NewEndpoint{URL: "https://example.com/1"})
+		mustEndpoint(t, s, a.ID, store.NewEndpoint{URL: "https://example.com/2"})
+		mustEndpoint(t, s, b.ID, store.NewEndpoint{URL: "https://example.com/3"})
+		mustEvent(t, s, a.ID, store.NewEvent{EventType: "x", Payload: []byte(`{}`)})
+		mustEvent(t, s, a.ID, store.NewEvent{EventType: "x", Payload: []byte(`{}`)})
+		mustEvent(t, s, b.ID, store.NewEvent{EventType: "x", Payload: []byte(`{}`)})
+
+		for _, r := range []store.DeliveryResult{
+			{Status: store.DeliverySucceeded, ResponseStatus: 200},
+			{Status: store.DeliveryFailed, Error: "boom"},
+		} {
+			d := mustClaim(t, s, time.Minute)
+			if err := s.RecordDeliveryResult(ctx, d.ID, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mustClaim(t, s, time.Minute)
+
+		count(map[string]int{
+			store.DeliveryPending: 2, store.DeliveryInProgress: 1, store.DeliverySucceeded: 1, store.DeliveryFailed: 1,
+		})
+	})
+}

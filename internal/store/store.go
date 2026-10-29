@@ -17,6 +17,11 @@ type Store interface {
 	// returns their versions, in order. It returns none when the database is
 	// up to date.
 	Migrate(ctx context.Context) ([]string, error)
+	// PendingMigrations returns the versions of the migrations that have not
+	// been applied yet, in order. It returns an empty slice when the
+	// database is up to date, and every version when it has never been
+	// migrated.
+	PendingMigrations(ctx context.Context) ([]string, error)
 	// Ping checks that the database can be reached.
 	Ping(ctx context.Context) error
 	// Close releases the database connections.
@@ -92,6 +97,29 @@ type Store interface {
 	// DeliveryFailed. It returns ErrNotFound if the delivery does not exist
 	// or is not in progress.
 	RecordDeliveryResult(ctx context.Context, deliveryID string, r DeliveryResult) error
+	// CountDeliveriesByStatus returns the number of deliveries in each of
+	// the Delivery* states, across all accounts. Every state is in the map,
+	// with 0 if no delivery is in it.
+	CountDeliveriesByStatus(ctx context.Context) (map[string]int, error)
+
+	// ListSettings returns the settings saved in the UI, ordered by name. It
+	// returns an empty slice if there are none.
+	ListSettings(ctx context.Context) ([]Setting, error)
+	// SetSetting saves the value of a setting, replacing any value it had.
+	// Values are checked by the caller before they reach the store.
+	SetSetting(ctx context.Context, name, value string) error
+	// DeleteSetting removes a saved setting, so the environment or the
+	// default applies again. Deleting a setting that is not saved is not an
+	// error.
+	DeleteSetting(ctx context.Context, name string) error
+}
+
+// Setting is a setting saved in the UI, which overrides the environment.
+type Setting struct {
+	// Name is the setting's environment variable, such as HOOKD_WORKERS.
+	Name      string
+	Value     string
+	UpdatedAt time.Time
 }
 
 // Account is a customer of Hookd. All other records belong to one.
