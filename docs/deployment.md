@@ -226,12 +226,26 @@ api_key:    hk_1r41QRqtUtyhEHFF6nnQZin__SkqHv-QP20dGALqfvE
 Keep the API key safe: it is shown only once.
 ```
 
-Give the key to the customer over a secure channel. Hookd stores only a hash of it, so a lost key cannot be shown again; create a new account instead. The customer can now call the API, as in the [API reference](api.md):
+Give the key to the customer over a secure channel. The customer can now call the API, as in the [API reference](api.md):
 
 ```bash
 curl -s https://hooks.example.com/v1/endpoints \
   -H "Authorization: Bearer hk_..."
 ```
+
+Hookd stores only a hash of the key, so a lost key cannot be shown again. Issue the account another key instead; its endpoints and events stay as they are:
+
+```bash
+hookd apikey create --account acct_01M636GV96GQFMA7V1G5N17DPQ
+```
+
+```
+account_id: acct_01M636GV96GQFMA7V1G5N17DPQ
+api_key:    hk_Zq0b1Cq7mY3d8xvJr2sKfW9uTnE4hLpA6gRiO5cVwXs
+Keep the API key safe: it is shown only once.
+```
+
+An account can have several keys, and each one keeps working when another is created. There is no command to revoke a key yet.
 
 ## Upgrading
 

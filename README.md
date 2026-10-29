@@ -154,6 +154,7 @@ The delivery now shows as `succeeded`, with the receiver's status:
 hookd serve                        Run the API server and delivery workers
 hookd migrate                      Apply database migrations
 hookd account create --name NAME   Create an account and print its API key
+hookd apikey create --account ID   Create another API key for an account and print it
 ```
 
 All settings come from `HOOKD_*` environment variables; see [Configuration](docs/configuration.md). `cmd/testreceiver` is a development tool and is not deployed.
@@ -161,7 +162,7 @@ All settings come from `HOOKD_*` environment variables; see [Configuration](docs
 ## Project layout
 
 ```
-cmd/hookd/            main: serve, migrate, account create
+cmd/hookd/            main: serve, migrate, account create, apikey create
 cmd/testreceiver/     verifying test receiver (dev/test only)
 internal/config/      env parsing and defaults
 internal/store/       Store interface, SQL implementation, dialects, migrations

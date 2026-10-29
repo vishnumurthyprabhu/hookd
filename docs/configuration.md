@@ -9,7 +9,7 @@ hookd: invalid configuration:
   HOOKD_WORKERS="0": must be a whole number greater than 0
 ```
 
-The settings apply to every command (`serve`, `migrate`, `account create`), so `migrate` and `account create` must be run with the same `HOOKD_DB_*` settings as `serve`.
+The settings apply to every command (`serve`, `migrate`, `account create`, `apikey create`), so `migrate`, `account create` and `apikey create` must be run with the same `HOOKD_DB_*` settings as `serve`.
 
 ## Settings
 

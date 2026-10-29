@@ -104,6 +104,14 @@ func TestRun(t *testing.T) {
 		},
 		{name: "account create without name", args: []string{"account", "create"}, code: 2, stderr: "--name is required"},
 		{name: "account without subcommand", args: []string{"account"}, code: 2, stderr: "unknown account command"},
+		{
+			name:   "apikey create without migrations",
+			args:   []string{"apikey", "create", "--account", "acct_x"},
+			code:   1,
+			stderr: `hookd migrate`,
+		},
+		{name: "apikey create without account", args: []string{"apikey", "create"}, code: 2, stderr: "--account is required"},
+		{name: "apikey without subcommand", args: []string{"apikey"}, code: 2, stderr: "unknown apikey command"},
 		{name: "unknown flag", args: []string{"serve", "--nope"}, code: 2, stderr: "flag provided but not defined"},
 		{
 			name:   "bad config",
@@ -201,5 +209,54 @@ func TestAccountCreate(t *testing.T) {
 	}
 	if acct.ID != acctID || acct.Name != "acme" {
 		t.Fatalf("key belongs to %+v, want %s named acme", acct, acctID)
+	}
+}
+
+func TestAPIKeyCreate(t *testing.T) {
+	path := useTempDB(t)
+	runOK(t, "migrate")
+	re := regexp.MustCompile(`(?m)^account_id: (\S+)\napi_key: +(\S+)$`)
+	m := re.FindStringSubmatch(runOK(t, "account", "create", "--name", "acme"))
+	if m == nil {
+		t.Fatal("account create printed no key")
+	}
+	acctID, oldKey := m[1], m[2]
+
+	out := runOK(t, "apikey", "create", "--account", acctID)
+	m = re.FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("apikey create printed %q", out)
+	}
+	if m[1] != acctID {
+		t.Fatalf("apikey create printed account %s, want %s", m[1], acctID)
+	}
+	newKey := m[2]
+	if newKey == oldKey {
+		t.Fatal("apikey create printed the account's existing key")
+	}
+
+	cfg := config.Default().DB
+	cfg.Path = path
+	s, err := store.Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, key := range []string{oldKey, newKey} {
+		acct, err := s.AccountByAPIKeyHash(context.Background(), ids.HashAPIKey(key))
+		if err != nil {
+			t.Fatalf("lookup of key: %v", err)
+		}
+		if acct.ID != acctID {
+			t.Fatalf("key belongs to %s, want %s", acct.ID, acctID)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"apikey", "create", "--account", "acct_unknown"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("unknown account: exit code %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), `no account "acct_unknown"`) || stdout.Len() != 0 {
+		t.Fatalf("unknown account: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
 }
