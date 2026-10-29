@@ -43,6 +43,8 @@ func TestDefaults(t *testing.T) {
 		AutoMigrate:       true,
 		LogLevel:          "info",
 		LogFormat:         "text",
+		AdminUI:           true,
+		AdminReceiverURL:  "",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("defaults:\n got  %+v\n want %+v", got, want)
@@ -87,6 +89,9 @@ var settings = []struct {
 	{"HOOKD_AUTO_MIGRATE", "false", func(c Config) any { return c.AutoMigrate }, false, []string{"yes", "maybe"}},
 	{"HOOKD_LOG_LEVEL", "DEBUG", func(c Config) any { return c.LogLevel }, "debug", []string{"trace", "verbose"}},
 	{"HOOKD_LOG_FORMAT", "json", func(c Config) any { return c.LogFormat }, "json", []string{"xml", "logfmt"}},
+	{"HOOKD_ADMIN_UI", "false", func(c Config) any { return c.AdminUI }, false, []string{"off", "nope"}},
+	{"HOOKD_ADMIN_RECEIVER_URL", "https://hookd.internal:8443/", func(c Config) any { return c.AdminReceiverURL }, "https://hookd.internal:8443/",
+		[]string{"hookd.internal:8080", "/admin", "ftp://hookd.internal", "http://", "http//hookd.internal", "http://[::1"}},
 }
 
 func TestEverySettingIsCovered(t *testing.T) {
@@ -171,6 +176,33 @@ func TestLeaseMustBeLongerThanTimeout(t *testing.T) {
 	}
 	if c.DeliveryLease != 31*time.Second || c.DeliveryTimeout != 30*time.Second {
 		t.Errorf("got lease=%v timeout=%v", c.DeliveryLease, c.DeliveryTimeout)
+	}
+}
+
+func TestReceiverBaseURL(t *testing.T) {
+	for _, tc := range []struct {
+		vars map[string]string
+		want string
+	}{
+		{nil, "http://127.0.0.1:8080"},
+		{map[string]string{"HOOKD_LISTEN_ADDR": ":9000"}, "http://127.0.0.1:9000"},
+		{map[string]string{"HOOKD_LISTEN_ADDR": "0.0.0.0:9000"}, "http://127.0.0.1:9000"},
+		{map[string]string{"HOOKD_LISTEN_ADDR": "[::]:9000"}, "http://127.0.0.1:9000"},
+		{map[string]string{"HOOKD_LISTEN_ADDR": "10.0.0.5:9000"}, "http://10.0.0.5:9000"},
+		{map[string]string{"HOOKD_LISTEN_ADDR": "localhost:9000"}, "http://localhost:9000"},
+		{map[string]string{"HOOKD_LISTEN_ADDR": "[::1]:9000"}, "http://[::1]:9000"},
+		{map[string]string{"HOOKD_ADMIN_RECEIVER_URL": "https://hookd.internal:8443"}, "https://hookd.internal:8443"},
+		{map[string]string{"HOOKD_ADMIN_RECEIVER_URL": "http://hookd-1.svc:8080/"}, "http://hookd-1.svc:8080"},
+		{map[string]string{"HOOKD_ADMIN_RECEIVER_URL": "http://lb.example/hookd/", "HOOKD_LISTEN_ADDR": "0.0.0.0:9000"},
+			"http://lb.example/hookd"},
+	} {
+		c, err := FromLookup(env(tc.vars))
+		if err != nil {
+			t.Fatalf("%v: FromLookup: %v", tc.vars, err)
+		}
+		if got := c.ReceiverBaseURL(); got != tc.want {
+			t.Errorf("%v: ReceiverBaseURL() = %q, want %q", tc.vars, got, tc.want)
+		}
 	}
 }
 

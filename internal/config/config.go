@@ -4,6 +4,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -35,6 +37,10 @@ type Config struct {
 	AutoMigrate       bool
 	LogLevel          string
 	LogFormat         string
+	AdminUI           bool
+	// AdminReceiverURL is the base URL the workers use to reach the built-in test
+	// receiver. Empty means derived from ListenAddr; see ReceiverBaseURL.
+	AdminReceiverURL string
 }
 
 // DB holds the database settings. Path is used by SQLite; the others by PostgreSQL,
@@ -75,6 +81,8 @@ func Default() Config {
 		AutoMigrate:       true,
 		LogLevel:          "info",
 		LogFormat:         LogFormatText,
+		AdminUI:           true,
+		AdminReceiverURL:  "",
 	}
 }
 
@@ -110,6 +118,8 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 	p.boolean("HOOKD_AUTO_MIGRATE", &c.AutoMigrate)
 	p.oneOf("HOOKD_LOG_LEVEL", &c.LogLevel, "debug", "info", "warn", "error")
 	p.oneOf("HOOKD_LOG_FORMAT", &c.LogFormat, LogFormatText, LogFormatJSON)
+	p.boolean("HOOKD_ADMIN_UI", &c.AdminUI)
+	p.httpURL("HOOKD_ADMIN_RECEIVER_URL", &c.AdminReceiverURL)
 
 	// A lease that runs out while a delivery is still being sent lets another
 	// worker claim it and send it a second time.
@@ -122,6 +132,26 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 		return Config{}, fmt.Errorf("invalid configuration:\n%w", errors.Join(p.errs...))
 	}
 	return c, nil
+}
+
+// ReceiverBaseURL returns the base URL, without a trailing slash, that the workers
+// use to reach the built-in test receiver: AdminReceiverURL when it is set, or else
+// http://127.0.0.1:<port> when ListenAddr listens on every interface and
+// http://<host>:<port> when it names a host.
+func (c Config) ReceiverBaseURL() string {
+	if c.AdminReceiverURL != "" {
+		return strings.TrimRight(c.AdminReceiverURL, "/")
+	}
+	host, port, err := net.SplitHostPort(c.ListenAddr)
+	if err != nil {
+		// The server cannot listen on such an address either.
+		return "http://" + strings.TrimRight(c.ListenAddr, "/")
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 type parser struct {
@@ -223,4 +253,18 @@ func (p *parser) boolean(name string, dst *bool) {
 		return
 	}
 	*dst = b
+}
+
+// httpURL accepts an absolute http or https URL with a host.
+func (p *parser) httpURL(name string, dst *string) {
+	v, ok := p.get(name)
+	if !ok {
+		return
+	}
+	u, err := url.Parse(v)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		p.fail(name, v, "an absolute http or https URL")
+		return
+	}
+	*dst = v
 }
