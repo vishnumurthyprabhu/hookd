@@ -75,6 +75,9 @@ type endpointFormData struct {
 	Description string
 	EventTypes  string
 	Errors      []string
+	// The fields below are the "Recent attempts" section of the endpoint
+	// page.
+	attemptsData
 	// The fields below are only set for a test endpoint.
 	testEndpointData
 }

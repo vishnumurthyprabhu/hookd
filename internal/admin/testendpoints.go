@@ -64,7 +64,8 @@ func newTestRequestRow(req store.TestRequest) testRequestRow {
 // renderEndpoint shows the page of the endpoint in form, which holds the
 // edit form. For a test endpoint it also loads the receiver and its
 // received requests, newest first. form.Status, if empty, becomes the
-// receiver's current status.
+// receiver's current status. Every endpoint page also shows the endpoint's
+// recent attempts.
 func (h *Handler) renderEndpoint(w http.ResponseWriter, r *http.Request, status int, form endpointFormData) {
 	rcvs, err := h.store.ListTestReceivers(r.Context(), form.Account.ID)
 	if err != nil {
@@ -87,6 +88,10 @@ func (h *Handler) renderEndpoint(w http.ResponseWriter, r *http.Request, status 
 		if form.Status == "" {
 			form.Status = strconv.Itoa(form.Receiver.ResponseStatus)
 		}
+	}
+	form.attemptsData, err = h.loadEndpointAttempts(r, form.Account.ID, form.Endpoint.ID)
+	if !h.endpointDone(w, r, err) {
+		return
 	}
 	h.render(w, r, status, "endpoint", "Endpoint", form)
 }

@@ -283,3 +283,73 @@ func TestSettingsWithoutManagerNotFound(t *testing.T) {
 	u := newTestUI(t)
 	wantPage(t, u.get("/admin/settings"), http.StatusNotFound)
 }
+
+func TestHealthWaitingRetries(t *testing.T) {
+	u, _ := newSettingsUI(t, nil)
+	acct, _ := u.newAccount("acme")
+	u.newEndpoint(acct.ID, store.NewEndpoint{URL: "https://example.com/a"})
+	u.newEvent(acct.ID, "order.paid")
+	u.newEvent(acct.ID, "order.paid")
+	u.newEvent(acct.ID, "order.paid")
+	// One delivery fails and waits for a retry, one succeeds, one has not
+	// been tried yet.
+	u.attempt(store.AttemptSucceeded, false)
+	u.attempt(store.AttemptFailed, true)
+
+	body := wantPage(t, u.get("/admin/settings"), http.StatusOK)
+	for _, want := range []string{
+		`<td id="health-waiting-retry">1</td>`,
+		`<td id="health-pending">2</td>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("health section lacks %q: %q", want, body)
+		}
+	}
+}
+
+func TestRetryScheduleSetting(t *testing.T) {
+	u, mgr := newSettingsUI(t, map[string]string{"HOOKD_RETENTION": "48h"})
+	body := wantPage(t, u.get("/admin/settings"), http.StatusOK)
+	row := settingRow(t, body, "HOOKD_RETENTION")
+	if !strings.Contains(row, "<code>48h</code>") || !strings.Contains(row, "set with environment variables") || strings.Contains(row, "<form") {
+		t.Fatalf("HOOKD_RETENTION is not shown read-only: %q", row)
+	}
+	row = settingRow(t, body, "HOOKD_RETRY_SCHEDULE")
+	if !strings.Contains(row, `action="/admin/settings/HOOKD_RETRY_SCHEDULE"`) || !strings.Contains(row, `value="5s,5m,30m,2h,5h,10h,10h"`) {
+		t.Fatalf("HOOKD_RETRY_SCHEDULE has no edit form with the default: %q", row)
+	}
+	wantPage(t, u.post("/admin/settings/HOOKD_RETENTION", url.Values{"value": {"1000h"}}), http.StatusForbidden)
+
+	wantRedirect(t, u.post("/admin/settings/HOOKD_RETRY_SCHEDULE", url.Values{"value": {"5s,10s,20s"}}), "/admin/settings")
+	if got := mgr.Current().RetrySchedule; len(got) != 3 || got[0] != 5*time.Second || got[2] != 20*time.Second {
+		t.Fatalf("retry schedule = %v, want [5s 10s 20s]", got)
+	}
+	body = wantPage(t, u.get("/admin/settings"), http.StatusOK)
+	row = settingRow(t, body, "HOOKD_RETRY_SCHEDULE")
+	if !strings.Contains(row, `value="5s,10s,20s"`) || !strings.Contains(row, "<td>UI</td>") || !strings.Contains(row, "/reset") {
+		t.Fatalf("row after save: %q", row)
+	}
+
+	// 20h + 20h + 4h is 48.4h with its jitter, more than the 48h retention.
+	body = wantPage(t, u.post("/admin/settings/HOOKD_RETRY_SCHEDULE", url.Values{"value": {"20h,20h,4h"}}), http.StatusUnprocessableEntity)
+	row = settingRow(t, body, "HOOKD_RETRY_SCHEDULE")
+	if text := html.UnescapeString(row); !strings.Contains(text, "HOOKD_RETENTION") || !strings.Contains(text, "HOOKD_RETRY_SCHEDULE plus 10%") ||
+		!strings.Contains(row, `value="20h,20h,4h"`) {
+		t.Fatalf("row does not show the reason and the input: %q", row)
+	}
+	if got := savedSettings(t, u.st)["HOOKD_RETRY_SCHEDULE"]; got != "5s,10s,20s" {
+		t.Fatalf("saved schedule = %q, want the previous 5s,10s,20s", got)
+	}
+
+	wantRedirect(t, u.post("/admin/settings/HOOKD_RETRY_SCHEDULE/reset", nil), "/admin/settings")
+	if got := mgr.Current().RetrySchedule; len(got) != 7 {
+		t.Fatalf("retry schedule after reset = %v, want the default", got)
+	}
+	if saved := savedSettings(t, u.st); len(saved) != 0 {
+		t.Fatalf("saved = %v, want nothing", saved)
+	}
+	row = settingRow(t, wantPage(t, u.get("/admin/settings"), http.StatusOK), "HOOKD_RETRY_SCHEDULE")
+	if !strings.Contains(row, `value="5s,5m,30m,2h,5h,10h,10h"`) || !strings.Contains(row, "<td>default</td>") {
+		t.Fatalf("row after reset: %q", row)
+	}
+}

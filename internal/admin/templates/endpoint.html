@@ -67,4 +67,41 @@
 {{end}}
 </section>
 {{end}}
+
+<section id="attempts">
+<h2>Recent attempts</h2>
+<p class="hint">Every attempt to send an event to this endpoint, newest first.</p>
+<form method="get" action="/admin/accounts/{{.Account.ID}}/endpoints/{{.Endpoint.ID}}#attempts">
+<label for="outcome">Outcome</label>
+<select id="outcome" name="outcome">
+<option value=""{{if not .Outcome}} selected{{end}}>all</option>
+<option value="succeeded"{{if eq .Outcome "succeeded"}} selected{{end}}>succeeded</option>
+<option value="failed"{{if eq .Outcome "failed"}} selected{{end}}>failed</option>
+</select>
+<button type="submit">Filter</button>
+</form>
+{{if .Attempts}}
+<div class="scroll">
+<table>
+<thead><tr><th>Started</th><th>Event</th><th>Attempt</th><th>Outcome</th><th>HTTP status</th><th>Latency</th><th>Error</th></tr></thead>
+<tbody>
+{{range .Attempts}}
+<tr id="attempt-{{.ID}}">
+<td>{{time .StartedAt}}</td>
+<td><a href="/admin/accounts/{{$.Account.ID}}/events/{{.EventID}}"><code>{{.EventID}}</code></a></td>
+<td>{{.Number}}</td>
+<td class="{{if eq .Outcome "succeeded"}}ok{{else}}failed{{end}}">{{.Outcome}}</td>
+<td>{{if .ResponseStatus}}{{.ResponseStatus}}{{else}}–{{end}}</td>
+<td>{{.Latency}}</td>
+<td>{{.Error}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{else}}
+<p>{{if .AttemptsPaged}}No more attempts.{{else if .Outcome}}No {{.Outcome}} attempts yet.{{else}}No attempts yet.{{end}}</p>
+{{end}}
+<p class="pager">{{if .AttemptsPaged}}<a href="/admin/accounts/{{.Account.ID}}/endpoints/{{.Endpoint.ID}}{{if .Outcome}}?outcome={{.Outcome}}{{end}}#attempts">First page</a>{{end}} {{if .AttemptsNext}}<a href="/admin/accounts/{{.Account.ID}}/endpoints/{{.Endpoint.ID}}?{{if .Outcome}}outcome={{.Outcome}}&amp;{{end}}attempts_before={{.AttemptsNext}}#attempts">Next page</a>{{end}}</p>
+</section>
 {{end}}

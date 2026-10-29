@@ -24,6 +24,7 @@
 {{if .Health.Counts}}
 <tr><th>Pending deliveries</th><td id="health-pending">{{index .Health.Counts "pending"}}</td></tr>
 <tr><th>Deliveries in progress</th><td id="health-in-progress">{{index .Health.Counts "in_progress"}}</td></tr>
+<tr><th>Waiting for a retry</th><td id="health-waiting-retry">{{if lt .Health.WaitingRetries 0}}could not be counted{{else}}{{.Health.WaitingRetries}}{{end}}</td></tr>
 {{else}}
 <tr><th>Deliveries</th><td>could not be counted</td></tr>
 {{end}}

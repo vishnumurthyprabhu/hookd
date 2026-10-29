@@ -43,6 +43,9 @@ type health struct {
 	PendingKnown bool
 	// Counts is nil when the deliveries could not be counted.
 	Counts map[string]int
+	// WaitingRetries is the number of pending deliveries waiting for a
+	// retry, or -1 when they could not be counted.
+	WaitingRetries int
 }
 
 // showSettings shows every setting with its value and source, and the
@@ -92,6 +95,12 @@ func (h *Handler) health(ctx context.Context) health {
 		h.log.ErrorContext(ctx, "admin health count deliveries", "err", err)
 	} else {
 		hl.Counts = counts
+	}
+	if n, err := h.store.CountWaitingRetries(ctx); err != nil {
+		h.log.ErrorContext(ctx, "admin health count waiting retries", "err", err)
+		hl.WaitingRetries = -1
+	} else {
+		hl.WaitingRetries = n
 	}
 	return hl
 }
