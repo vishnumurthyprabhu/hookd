@@ -19,6 +19,63 @@ func (s *SQLStore) CreateAccount(ctx context.Context, name string) (Account, err
 	return a, nil
 }
 
+// GetAccount implements Store.
+func (s *SQLStore) GetAccount(ctx context.Context, id string) (Account, error) {
+	var (
+		a       Account
+		created dbTime
+	)
+	err := s.queryRow(ctx, s.db, `SELECT id, name, created_at FROM accounts WHERE id = ?`, id).
+		Scan(&a.ID, &a.Name, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, ErrNotFound
+	}
+	if err != nil {
+		return Account{}, fmt.Errorf("store: get account: %w", err)
+	}
+	a.CreatedAt = created.Time
+	return a, nil
+}
+
+// ListAccounts implements Store. IDs are ULIDs, so ordering by ID is ordering
+// by creation time. The counts use the (account_id, …) indexes of endpoints
+// and api_keys.
+func (s *SQLStore) ListAccounts(ctx context.Context, limit int, after string) ([]AccountSummary, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("store: list accounts: limit %d is not positive", limit)
+	}
+	rows, err := s.query(ctx, s.db,
+		`SELECT a.id, a.name, a.created_at,
+			(SELECT count(*) FROM endpoints e WHERE e.account_id = a.id AND e.deleted_at IS NULL),
+			(SELECT count(*) FROM api_keys k WHERE k.account_id = a.id)
+		FROM accounts a
+		WHERE a.id > ?
+		ORDER BY a.id
+		LIMIT ?`,
+		after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list accounts: %w", err)
+	}
+	defer rows.Close()
+
+	accts := []AccountSummary{}
+	for rows.Next() {
+		var (
+			a       AccountSummary
+			created dbTime
+		)
+		if err := rows.Scan(&a.ID, &a.Name, &created, &a.Endpoints, &a.APIKeys); err != nil {
+			return nil, fmt.Errorf("store: list accounts: %w", err)
+		}
+		a.CreatedAt = created.Time
+		accts = append(accts, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list accounts: %w", err)
+	}
+	return accts, nil
+}
+
 // CreateAPIKey implements Store.
 func (s *SQLStore) CreateAPIKey(ctx context.Context, accountID string) (APIKey, string, error) {
 	key, err := ids.NewAPIKey()

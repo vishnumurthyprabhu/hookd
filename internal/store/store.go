@@ -29,6 +29,13 @@ type Store interface {
 
 	// CreateAccount creates an account with the given name.
 	CreateAccount(ctx context.Context, name string) (Account, error)
+	// GetAccount returns an account, or ErrNotFound if it does not exist.
+	GetAccount(ctx context.Context, id string) (Account, error)
+	// ListAccounts returns up to limit accounts, oldest first, each with its
+	// number of non-deleted endpoints and of API keys. If after is not
+	// empty, only accounts whose ID sorts after it are returned, so the last
+	// ID of one page is the cursor for the next. limit must be positive.
+	ListAccounts(ctx context.Context, limit int, after string) ([]AccountSummary, error)
 	// CreateAPIKey creates an API key for an account and returns its record
 	// and the plain key. Only the key's hash is stored, so the plain key
 	// cannot be read again. It returns ErrNotFound if the account does not
@@ -118,6 +125,14 @@ type Store interface {
 	// GetEvent returns one of the account's events with its deliveries, or
 	// ErrNotFound if it does not exist or belongs to another account.
 	GetEvent(ctx context.Context, accountID, id string) (Event, error)
+	// ListEvents returns up to f.Limit of the account's events, newest
+	// first, without their payloads and with the counts of their deliveries
+	// by status. f.EventType, if not empty, keeps only events of exactly
+	// that type. f.Before, if not empty, keeps only events whose ID sorts
+	// before it, so the last ID of one page is the cursor for the next.
+	// f.Limit must be positive. It returns an empty slice if there are no
+	// such events, including when the account does not exist.
+	ListEvents(ctx context.Context, accountID string, f EventFilter) ([]EventSummary, error)
 
 	// ClaimDelivery atomically takes the oldest delivery that is pending, or
 	// in progress with an expired lease, marks it in progress and locks it
@@ -165,6 +180,16 @@ type Account struct {
 	ID        string
 	Name      string
 	CreatedAt time.Time
+}
+
+// AccountSummary is an account as ListAccounts returns it.
+type AccountSummary struct {
+	Account
+	// Endpoints is the number of the account's endpoints that are not
+	// deleted.
+	Endpoints int
+	// APIKeys is the number of the account's API keys.
+	APIKeys int
 }
 
 // APIKey is the stored record of an API key. It holds the key's display
@@ -302,6 +327,30 @@ type Event struct {
 	// Deliveries holds one entry per target endpoint, ordered by endpoint
 	// ID. It is never nil.
 	Deliveries []DeliveryStatus
+}
+
+// EventFilter selects the events ListEvents returns.
+type EventFilter struct {
+	// EventType, if not empty, keeps only events of exactly this type.
+	EventType string
+	// Before, if not empty, keeps only events whose ID sorts before it.
+	Before string
+	// Limit is the most events returned. It must be positive.
+	Limit int
+}
+
+// EventSummary is an event as ListEvents returns it: without its payload,
+// and with its deliveries counted instead of listed.
+type EventSummary struct {
+	ID             string
+	AccountID      string
+	EventType      string
+	IdempotencyKey string
+	CreatedAt      time.Time
+	// Deliveries holds the number of the event's deliveries in each of the
+	// Delivery* states. Every state is in the map, with 0 if no delivery is
+	// in it.
+	Deliveries map[string]int
 }
 
 // Delivery states.

@@ -162,6 +162,77 @@ func (s *SQLStore) GetEvent(ctx context.Context, accountID, id string) (Event, e
 	return s.getEvent(ctx, s.db, accountID, id)
 }
 
+// ListEvents implements Store. IDs are ULIDs, so ordering by ID is ordering
+// by creation time. The page of events is chosen first, using the
+// (account_id, id) or (account_id, event_type, id) index, and only its
+// deliveries are counted. An event without deliveries comes back as one row
+// with a NULL status.
+func (s *SQLStore) ListEvents(ctx context.Context, accountID string, f EventFilter) ([]EventSummary, error) {
+	if f.Limit <= 0 {
+		return nil, fmt.Errorf("store: list events: limit %d is not positive", f.Limit)
+	}
+	where, args := `account_id = ?`, []any{accountID}
+	if f.EventType != "" {
+		where += ` AND event_type = ?`
+		args = append(args, f.EventType)
+	}
+	if f.Before != "" {
+		where += ` AND id < ?`
+		args = append(args, f.Before)
+	}
+	args = append(args, f.Limit)
+
+	rows, err := s.query(ctx, s.db,
+		`SELECT ev.id, ev.event_type, ev.idempotency_key, ev.created_at, d.status, count(d.id)
+		FROM (
+			SELECT id, event_type, idempotency_key, created_at FROM events
+			WHERE `+where+`
+			ORDER BY id DESC
+			LIMIT ?
+		) ev
+		LEFT JOIN deliveries d ON d.event_id = ev.id
+		GROUP BY ev.id, ev.event_type, ev.idempotency_key, ev.created_at, d.status
+		ORDER BY ev.id DESC`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list events: %w", err)
+	}
+	defer rows.Close()
+
+	events := []EventSummary{}
+	for rows.Next() {
+		var (
+			e       EventSummary
+			key     sql.NullString
+			created dbTime
+			status  sql.NullString
+			n       int
+		)
+		if err := rows.Scan(&e.ID, &e.EventType, &key, &created, &status, &n); err != nil {
+			return nil, fmt.Errorf("store: list events: %w", err)
+		}
+		if len(events) == 0 || events[len(events)-1].ID != e.ID {
+			e.AccountID = accountID
+			e.IdempotencyKey = key.String
+			e.CreatedAt = created.Time
+			e.Deliveries = map[string]int{
+				DeliveryPending:    0,
+				DeliveryInProgress: 0,
+				DeliverySucceeded:  0,
+				DeliveryFailed:     0,
+			}
+			events = append(events, e)
+		}
+		if status.Valid {
+			events[len(events)-1].Deliveries[status.String] = n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list events: %w", err)
+	}
+	return events, nil
+}
+
 func (s *SQLStore) getEvent(ctx context.Context, q queryer, accountID, id string) (Event, error) {
 	var (
 		e       Event
