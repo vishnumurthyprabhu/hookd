@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -206,6 +207,25 @@ func TestCreateEventPayloadSize(t *testing.T) {
 	decodeEvent(t, ts2.send(t, "POST", "/v1/events", key2, body(payloadOf(256<<10)), nil), http.StatusAccepted)
 	decodeError(t, ts2.send(t, "POST", "/v1/events", key2, body(payloadOf(256<<10+1)), nil),
 		http.StatusRequestEntityTooLarge, CodePayloadTooLarge)
+}
+
+func TestCreateEventPayloadSizeChangesWhileRunning(t *testing.T) {
+	var limit atomic.Int64
+	limit.Store(1000)
+	ts, _ := wakeServer(t, WithMaxPayloadBytesFunc(limit.Load))
+	_, key := ts.newKey(t)
+	body := `{"event_type":"big","payload":{"x":"` + strings.Repeat("a", 500) + `"}}`
+
+	decodeEvent(t, ts.send(t, "POST", "/v1/events", key, body, nil), http.StatusAccepted)
+	// The same server refuses the same event once the limit is lowered.
+	limit.Store(100)
+	rec := ts.send(t, "POST", "/v1/events", key, body, nil)
+	decodeError(t, rec, http.StatusRequestEntityTooLarge, CodePayloadTooLarge)
+	if !strings.Contains(rec.Body.String(), "100 bytes") {
+		t.Errorf("error %s does not name the new limit", rec.Body.String())
+	}
+	limit.Store(1000)
+	decodeEvent(t, ts.send(t, "POST", "/v1/events", key, body, nil), http.StatusAccepted)
 }
 
 func TestCreateEventIdempotency(t *testing.T) {

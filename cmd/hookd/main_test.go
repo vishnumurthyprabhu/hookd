@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -359,5 +360,36 @@ func TestAPIKeyListAndRevoke(t *testing.T) {
 	}
 	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "no API keys") {
 		t.Fatalf("list of account without keys: stdout %q, stderr %q", stdout.String(), stderr.String())
+	}
+}
+
+// TestServeAppliesSavedSettings shows that a setting saved in the database
+// (as the admin UI does) before serve starts is in effect from the start,
+// over the environment.
+func TestServeAppliesSavedSettings(t *testing.T) {
+	path := useTempDB(t)
+	t.Setenv("HOOKD_MAX_PAYLOAD_BYTES", "100000")
+	runOK(t, "migrate")
+	c := apiClient{t: t, key: createAccount(t, "acme")}
+
+	cfg := config.Default().DB
+	cfg.Path = path
+	s, err := store.Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting(context.Background(), "HOOKD_MAX_PAYLOAD_BYTES", "100"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	c.base = startServe(t)
+	small := map[string]any{"event_type": "order.paid", "payload": json.RawMessage(`{"n":1}`)}
+	if status := c.do("POST", "/v1/events", small, nil); status != http.StatusAccepted {
+		t.Fatalf("POST /v1/events with a small payload: status %d, want 202", status)
+	}
+	big := map[string]any{"event_type": "order.paid", "payload": json.RawMessage(`{"x":"` + strings.Repeat("a", 200) + `"}`)}
+	if status := c.do("POST", "/v1/events", big, nil); status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("POST /v1/events with a 208-byte payload: status %d, want 413 from the saved limit of 100", status)
 	}
 }

@@ -30,7 +30,7 @@ type Server struct {
 	store           store.Store
 	log             *slog.Logger
 	mux             *http.ServeMux
-	maxPayloadBytes int64
+	maxPayloadBytes func() int64
 	wake            chan<- struct{}
 }
 
@@ -40,7 +40,14 @@ type Option func(*Server)
 // WithMaxPayloadBytes sets the largest event payload POST /v1/events
 // accepts (HOOKD_MAX_PAYLOAD_BYTES). n must be positive.
 func WithMaxPayloadBytes(n int64) Option {
-	return func(s *Server) { s.maxPayloadBytes = n }
+	return WithMaxPayloadBytesFunc(func() int64 { return n })
+}
+
+// WithMaxPayloadBytesFunc makes POST /v1/events read the largest payload it
+// accepts from max for each request, so a limit changed while Hookd runs
+// applies to the next request. max must return a positive value.
+func WithMaxPayloadBytesFunc(max func() int64) Option {
+	return func(s *Server) { s.maxPayloadBytes = max }
 }
 
 // WithWake gives the server a channel to signal after each new event is
@@ -53,7 +60,8 @@ func WithWake(wake chan<- struct{}) Option {
 
 // New returns a Server that keeps its state in st and logs to log.
 func New(st store.Store, log *slog.Logger, opts ...Option) *Server {
-	s := &Server{store: st, log: log, mux: http.NewServeMux(), maxPayloadBytes: defaultMaxPayloadBytes}
+	s := &Server{store: st, log: log, mux: http.NewServeMux()}
+	WithMaxPayloadBytes(defaultMaxPayloadBytes)(s)
 	for _, opt := range opts {
 		opt(s)
 	}

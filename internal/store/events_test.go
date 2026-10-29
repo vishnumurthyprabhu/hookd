@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -213,6 +214,38 @@ func TestIdempotencyKeyAfterWindow(t *testing.T) {
 		third, created := mustEvent(t, s, acct.ID, in)
 		if created || third.ID != second.ID {
 			t.Fatalf("repeat within the new window = %s (created %v), want %s", third.ID, created, second.ID)
+		}
+	})
+}
+
+func TestIdempotencyWindowChangeAppliesToNextEvent(t *testing.T) {
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		c := &clock{t: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
+		var window atomic.Int64
+		window.Store(int64(time.Hour))
+		s := db.New(t, store.WithClock(c.now),
+			store.WithIdempotencyWindowFunc(func() time.Duration { return time.Duration(window.Load()) }))
+		acct := mustAccount(t, s)
+
+		in := store.NewEvent{EventType: "order.paid", Payload: []byte(`{}`), IdempotencyKey: "k1"}
+		first, _ := mustEvent(t, s, acct.ID, in)
+		c.advance(10 * time.Minute)
+		if again, created := mustEvent(t, s, acct.ID, in); created || again.ID != first.ID {
+			t.Fatalf("repeat within the 1h window = %s (created %v), want %s", again.ID, created, first.ID)
+		}
+
+		// Shortened to 5 minutes, the same store no longer honours the key.
+		window.Store(int64(5 * time.Minute))
+		second, created := mustEvent(t, s, acct.ID, in)
+		if !created || second.ID == first.ID {
+			t.Fatalf("repeat after shortening the window = %s (created %v), want a new event", second.ID, created)
+		}
+
+		// Lengthened again, it is honoured for the event now holding the key.
+		c.advance(time.Hour)
+		window.Store(int64(2 * time.Hour))
+		if third, created := mustEvent(t, s, acct.ID, in); created || third.ID != second.ID {
+			t.Fatalf("repeat after lengthening the window = %s (created %v), want %s", third.ID, created, second.ID)
 		}
 	})
 }

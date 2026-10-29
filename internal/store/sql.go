@@ -19,8 +19,9 @@ type SQLStore struct {
 	db  *sql.DB
 	d   dialect
 	now func() time.Time
-	// idempotencyWindow is how long an event's idempotency key is honoured.
-	idempotencyWindow time.Duration
+	// idempotencyWindow returns how long an event's idempotency key is
+	// honoured. It is called for each event, so a change applies at once.
+	idempotencyWindow func() time.Duration
 	// pgSchema, if set, is the PostgreSQL schema the store works in.
 	pgSchema string
 }
@@ -39,7 +40,14 @@ func WithClock(now func() time.Time) Option {
 // WithIdempotencyWindow sets how long CreateEvent honours an idempotency key
 // (HOOKD_IDEMPOTENCY_WINDOW). The default is config.Default's.
 func WithIdempotencyWindow(d time.Duration) Option {
-	return func(s *SQLStore) { s.idempotencyWindow = d }
+	return WithIdempotencyWindowFunc(func() time.Duration { return d })
+}
+
+// WithIdempotencyWindowFunc makes CreateEvent read the idempotency window from
+// window each time it stores an event, so a window changed while Hookd runs
+// applies to the next event.
+func WithIdempotencyWindowFunc(window func() time.Duration) Option {
+	return func(s *SQLStore) { s.idempotencyWindow = window }
 }
 
 // WithPostgresSchema makes a PostgreSQL store create and use its tables in
@@ -52,7 +60,8 @@ func WithPostgresSchema(schema string) Option {
 // Open connects to the database described by cfg and checks that it can be
 // reached. It does not apply migrations; call Migrate for that.
 func Open(ctx context.Context, cfg config.DB, opts ...Option) (*SQLStore, error) {
-	s := &SQLStore{now: time.Now, idempotencyWindow: config.Default().IdempotencyWindow}
+	defaultWindow := config.Default().IdempotencyWindow
+	s := &SQLStore{now: time.Now, idempotencyWindow: func() time.Duration { return defaultWindow }}
 	for _, opt := range opts {
 		opt(s)
 	}

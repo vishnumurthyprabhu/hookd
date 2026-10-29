@@ -66,11 +66,39 @@ func (f *fixture) event(t *testing.T, payload string) string {
 	return e.ID
 }
 
-// startPool runs a pool on the fixture's store, wakes it once, and stops it
-// when the test ends. The returned function stops it early.
+// liveConfig is a pool configuration a test changes while the pool runs.
+type liveConfig struct {
+	mu  sync.Mutex
+	cfg Config
+}
+
+func (l *liveConfig) get() Config {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.cfg
+}
+
+func (l *liveConfig) set(change func(*Config)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	change(&l.cfg)
+}
+
+// startPool runs a pool with a fixed configuration on the fixture's store,
+// wakes it once, and stops it when the test ends. The returned function stops
+// it early.
 func (f *fixture) startPool(t *testing.T, cfg Config) func() {
 	t.Helper()
+	_, stop := f.startLivePool(t, func() Config { return cfg })
+	return stop
+}
+
+// startLivePool is startPool with a configuration read from cfg. The pool
+// checks the worker count every 10ms.
+func (f *fixture) startLivePool(t *testing.T, cfg func() Config) (*Pool, func()) {
+	t.Helper()
 	p := NewPool(f.st, slog.New(slog.DiscardHandler), cfg)
+	p.resizeEvery = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -90,7 +118,7 @@ func (f *fixture) startPool(t *testing.T, cfg Config) func() {
 		})
 	}
 	t.Cleanup(stop)
-	return stop
+	return p, stop
 }
 
 // wait polls until every delivery of the event is final and returns them.
@@ -399,5 +427,125 @@ func TestShutdownFinishesInFlightDelivery(t *testing.T) {
 	stop()
 	if d := f.waitOne(t, id); d.Status != store.DeliverySucceeded {
 		t.Errorf("delivery = %+v, want succeeded", d)
+	}
+}
+
+// waitFor polls cond until it holds, and fails the test after 5 seconds.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestWorkerCountFollowsSetting(t *testing.T) {
+	f := newFixture(t)
+	var inFlight, peak atomic.Int64
+	arrived := make(chan struct{}, 100)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+		}
+		arrived <- struct{}{}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		time.Sleep(20 * time.Millisecond)
+	}))
+	t.Cleanup(srv.Close)
+	for range 3 {
+		f.endpoint(t, srv.URL)
+	}
+	live := &liveConfig{cfg: testConfig}
+	live.set(func(c *Config) { c.Workers, c.Timeout = 1, 5*time.Second })
+	first := f.event(t, `{"n":1}`) // three deliveries
+	p, _ := f.startLivePool(t, live.get)
+
+	// One worker: one delivery at a time.
+	<-arrived
+	time.Sleep(50 * time.Millisecond)
+	if n := inFlight.Load(); n != 1 {
+		t.Fatalf("deliveries in flight with 1 worker = %d, want 1", n)
+	}
+
+	// Grown to three, the new workers take the other two.
+	live.set(func(c *Config) { c.Workers = 3 })
+	for range 2 {
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatal("new workers did not start delivering")
+		}
+	}
+	if n := p.running.Load(); n != 3 {
+		t.Fatalf("workers running = %d, want 3", n)
+	}
+
+	// Shrunk to one while all three are sending: the stopped workers finish
+	// their deliveries first.
+	live.set(func(c *Config) { c.Workers = 1 })
+	time.Sleep(50 * time.Millisecond)
+	if n := p.running.Load(); n != 3 {
+		t.Fatalf("workers running while sending = %d, want 3 until their deliveries finish", n)
+	}
+	close(release)
+	for _, d := range f.wait(t, first) {
+		if d.Status != store.DeliverySucceeded {
+			t.Errorf("delivery = %+v, want succeeded", d)
+		}
+	}
+	waitFor(t, "workers to stop", func() bool { return p.running.Load() == 1 })
+
+	// The one worker left still delivers, one at a time.
+	peak.Store(0)
+	second := f.event(t, `{"n":2}`)
+	select {
+	case p.Wake() <- struct{}{}:
+	default:
+	}
+	for _, d := range f.wait(t, second) {
+		if d.Status != store.DeliverySucceeded {
+			t.Errorf("delivery = %+v, want succeeded", d)
+		}
+	}
+	if n := peak.Load(); n != 1 {
+		t.Errorf("deliveries in flight with 1 worker = %d, want 1", n)
+	}
+}
+
+func TestChangedTimeoutAppliesToNextSend(t *testing.T) {
+	f := newFixture(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(200 * time.Millisecond):
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(srv.Close)
+	f.endpoint(t, srv.URL)
+	live := &liveConfig{cfg: testConfig}
+	live.set(func(c *Config) { c.Timeout = 5 * time.Second })
+	p, _ := f.startLivePool(t, live.get)
+
+	if d := f.waitOne(t, f.event(t, `{"n":1}`)); d.Status != store.DeliverySucceeded {
+		t.Fatalf("delivery with a 5s timeout = %+v, want succeeded", d)
+	}
+
+	live.set(func(c *Config) { c.Timeout = 50 * time.Millisecond })
+	id := f.event(t, `{"n":2}`)
+	select {
+	case p.Wake() <- struct{}{}:
+	default:
+	}
+	d := f.waitOne(t, id)
+	if d.Status != store.DeliveryFailed || !strings.Contains(d.Error, "timeout: no response within 50ms") {
+		t.Errorf("delivery with a 50ms timeout = %+v, want failed with a timeout of 50ms", d)
 	}
 }

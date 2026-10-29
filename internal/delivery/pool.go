@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"hookd/internal/signing"
@@ -22,7 +23,12 @@ const ErrEndpointDisabled = "endpoint_disabled"
 // recorded.
 const recordTimeout = 10 * time.Second
 
-// Config holds the pool's settings.
+// resizeInterval is how often Run compares the number of workers with
+// Config.Workers.
+const resizeInterval = time.Second
+
+// Config holds the pool's settings. The pool reads them again each time it
+// uses one, so they can change while it runs.
 type Config struct {
 	// Workers is the number of delivery goroutines (HOOKD_WORKERS).
 	Workers int
@@ -42,23 +48,32 @@ type Config struct {
 type Pool struct {
 	store  store.Store
 	log    *slog.Logger
-	cfg    Config
+	cfg    func() Config
 	sender *Sender
 	wake   chan struct{}
 	now    func() time.Time
+	// resizeEvery is how often Run checks Config.Workers.
+	resizeEvery time.Duration
+	// running counts the worker goroutines, including stopped ones still
+	// finishing a delivery.
+	running atomic.Int64
 }
 
-// NewPool returns a pool that works on st. Start it with Run.
-func NewPool(st store.Store, log *slog.Logger, cfg Config) *Pool {
+// NewPool returns a pool that works on st. Start it with Run. cfg is called
+// whenever the pool needs a setting, so a change applies without a restart:
+// the worker count within about a second, the poll interval at a worker's
+// next wait, and the timeout and lease at the next delivery.
+func NewPool(st store.Store, log *slog.Logger, cfg func() Config) *Pool {
 	return &Pool{
 		store:  st,
 		log:    log,
 		cfg:    cfg,
-		sender: NewSender(cfg.Timeout),
+		sender: NewSender(),
 		// One pending signal is enough: a worker that wakes up claims until
 		// the queue is empty and wakes another for each delivery it takes.
-		wake: make(chan struct{}, 1),
-		now:  time.Now,
+		wake:        make(chan struct{}, 1),
+		now:         time.Now,
+		resizeEvery: resizeInterval,
 	}
 }
 
@@ -67,29 +82,74 @@ func NewPool(st store.Store, log *slog.Logger, cfg Config) *Pool {
 func (p *Pool) Wake() chan<- struct{} { return p.wake }
 
 // Run starts the workers and blocks until ctx is done and every worker has
-// stopped. A delivery being sent when ctx is done is finished and recorded
-// first, so stopping takes at most about Timeout.
+// stopped. While it runs, it starts or stops workers to match Workers. A
+// delivery being sent when its worker is stopped, or when ctx is done, is
+// finished and recorded first, so stopping takes at most about Timeout.
 func (p *Pool) Run(ctx context.Context) {
 	var wg sync.WaitGroup
-	for range p.cfg.Workers {
-		wg.Go(func() { p.worker(ctx) })
+	// stops holds one cancel function per worker that has not been told to
+	// stop.
+	var stops []context.CancelFunc
+	resize := func() {
+		want := max(p.cfg().Workers, 0)
+		if want == len(stops) {
+			return
+		}
+		if len(stops) > 0 {
+			p.log.Info("changing the number of workers", "from", len(stops), "to", want)
+		}
+		for len(stops) < want {
+			wctx, stop := context.WithCancel(ctx)
+			stops = append(stops, stop)
+			wg.Go(func() { p.worker(wctx) })
+		}
+		for len(stops) > want {
+			last := len(stops) - 1
+			stops[last]()
+			stops = stops[:last]
+		}
 	}
-	wg.Wait()
+
+	resize()
+	ticker := time.NewTicker(p.resizeEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			for _, stop := range stops {
+				stop()
+			}
+			return
+		case <-ticker.C:
+			resize()
+		}
+	}
 }
 
 // worker claims and sends deliveries until there are none, then sleeps until
-// it is woken or the poll interval passes.
+// it is woken or the poll interval passes. It returns when ctx is done, but
+// never in the middle of a delivery.
 func (p *Pool) worker(ctx context.Context) {
-	ticker := time.NewTicker(p.cfg.PollInterval)
-	defer ticker.Stop()
+	p.running.Add(1)
+	defer p.running.Add(-1)
 	for {
 		for ctx.Err() == nil && p.deliverOne(ctx) {
 		}
+		timer := time.NewTimer(p.cfg().PollInterval)
 		select {
 		case <-ctx.Done():
-			return
 		case <-p.wake:
-		case <-ticker.C:
+			if ctx.Err() != nil {
+				// This worker was stopped: pass the signal on to one that
+				// was not.
+				p.signal()
+			}
+		case <-timer.C:
+		}
+		timer.Stop()
+		if ctx.Err() != nil {
+			return
 		}
 	}
 }
@@ -97,7 +157,7 @@ func (p *Pool) worker(ctx context.Context) {
 // deliverOne claims one delivery and handles it. It returns false when there
 // was nothing to claim or the claim failed.
 func (p *Pool) deliverOne(ctx context.Context) bool {
-	d, ok, err := p.store.ClaimDelivery(ctx, p.cfg.Lease)
+	d, ok, err := p.store.ClaimDelivery(ctx, p.cfg().Lease)
 	if err != nil {
 		if ctx.Err() == nil {
 			p.log.Error("claim delivery", "err", err)
@@ -158,7 +218,7 @@ func (p *Pool) send(ctx context.Context, job store.DeliveryJob, ts time.Time) st
 	if err != nil {
 		return store.DeliveryResult{Status: store.DeliveryFailed, Error: err.Error()}
 	}
-	status, err := p.sender.Send(ctx, job.Endpoint.URL, header, job.Event.Payload)
+	status, err := p.sender.Send(ctx, p.cfg().Timeout, job.Endpoint.URL, header, job.Event.Payload)
 	switch {
 	case err != nil:
 		return store.DeliveryResult{Status: store.DeliveryFailed, Error: err.Error()}

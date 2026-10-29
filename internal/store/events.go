@@ -43,7 +43,7 @@ func (s *SQLStore) CreateEvent(ctx context.Context, accountID string, in NewEven
 				return err
 			}
 			if found {
-				if prev.createdAt.Time.After(now.Add(-s.idempotencyWindow)) {
+				if prev.createdAt.Time.After(now.Add(-s.idempotencyWindow())) {
 					created = false
 					e, err = s.getEvent(ctx, tx, accountID, prev.id)
 					return err

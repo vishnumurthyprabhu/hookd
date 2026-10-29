@@ -18,6 +18,7 @@ import (
 	"hookd/internal/api"
 	"hookd/internal/config"
 	"hookd/internal/delivery"
+	"hookd/internal/settings"
 	"hookd/internal/store"
 )
 
@@ -90,11 +91,17 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return flagExit(err)
 	}
+	// Until the settings manager exists, which needs the store, the log level
+	// is the environment's.
 	log := cfg.NewLogger(stderr)
 	log.Debug("starting", "listen_addr", cfg.ListenAddr, "db_driver", cfg.DB.Driver)
 
+	// mgr is set before anything stores an event.
+	var mgr *settings.Manager
 	ctx := context.Background()
-	s, err := store.Open(ctx, cfg.DB, store.WithIdempotencyWindow(cfg.IdempotencyWindow))
+	s, err := store.Open(ctx, cfg.DB, store.WithIdempotencyWindowFunc(func() time.Duration {
+		return mgr.Current().IdempotencyWindow
+	}))
 	if err != nil {
 		log.Error("open database", "err", err)
 		return 1
@@ -111,6 +118,22 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// The settings saved from the admin UI apply from the start, so a restart
+	// keeps them. If they cannot be read or are invalid, Hookd starts with
+	// the environment's and the manager keeps trying.
+	mgr, err = settings.New(s)
+	if err != nil {
+		log.Error("settings", "err", err)
+		return 1
+	}
+	// From here on the log level follows HOOKD_LOG_LEVEL as the manager sees
+	// it, and the manager logs with that logger too.
+	log = cfg.NewLoggerAt(stderr, mgr.LevelVar())
+	settings.WithLogger(log)(mgr)
+	if err := mgr.Load(ctx); err != nil {
+		log.Error("saved settings not applied; using the environment's", "err", err)
+	}
+
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		log.Error("listen", "err", err)
@@ -120,11 +143,21 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 
 	ctx, stop := signalContext()
 	defer stop()
-	pool := delivery.NewPool(s, log, delivery.Config{
-		Workers:      cfg.Workers,
-		PollInterval: cfg.PollInterval,
-		Timeout:      cfg.DeliveryTimeout,
-		Lease:        cfg.DeliveryLease,
+	settingsCtx, stopSettings := context.WithCancel(ctx)
+	settingsDone := make(chan struct{})
+	go func() {
+		defer close(settingsDone)
+		mgr.Run(settingsCtx)
+	}()
+
+	pool := delivery.NewPool(s, log, func() delivery.Config {
+		c := mgr.Current()
+		return delivery.Config{
+			Workers:      c.Workers,
+			PollInterval: c.PollInterval,
+			Timeout:      c.DeliveryTimeout,
+			Lease:        c.DeliveryLease,
+		}
 	})
 	workersCtx, stopWorkers := context.WithCancel(ctx)
 	workersDone := make(chan struct{})
@@ -133,11 +166,15 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 		pool.Run(workersCtx)
 	}()
 
-	srv := api.New(s, log, api.WithMaxPayloadBytes(cfg.MaxPayloadBytes), api.WithWake(pool.Wake()))
+	srv := api.New(s, log,
+		api.WithMaxPayloadBytesFunc(func() int64 { return mgr.Current().MaxPayloadBytes }),
+		api.WithWake(pool.Wake()))
 	err = srv.Serve(ctx, ln)
 	// Workers finish the deliveries they are sending before they stop.
 	stopWorkers()
 	<-workersDone
+	stopSettings()
+	<-settingsDone
 	if err != nil {
 		log.Error("serve", "err", err)
 		return 1

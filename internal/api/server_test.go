@@ -294,7 +294,7 @@ func TestServeReturnsListenerError(t *testing.T) {
 // usable for the next request.
 func TestOversizedBodyOverTCP(t *testing.T) {
 	ts := newTestServer(t)
-	ts.srv.maxPayloadBytes = 1000
+	WithMaxPayloadBytes(1000)(ts.srv)
 	_, key := ts.newKey(t)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

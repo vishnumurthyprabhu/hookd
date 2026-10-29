@@ -105,10 +105,13 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 // decodeEvent reads and checks the body of POST /v1/events. On failure it
 // returns the status, code and message of the error to answer with.
 func (s *Server) decodeEvent(w http.ResponseWriter, r *http.Request) (in store.NewEvent, status int, code, msg string) {
-	body, oversized, err := readBody(w, r, s.maxPayloadBytes+envelopeOverhead)
+	// Read the limit once, so the request is checked against one value even
+	// if the setting changes meanwhile.
+	maxPayload := s.maxPayloadBytes()
+	body, oversized, err := readBody(w, r, maxPayload+envelopeOverhead)
 	if oversized {
 		return store.NewEvent{}, http.StatusRequestEntityTooLarge, CodePayloadTooLarge,
-			validate.PayloadTooLargeMessage(s.maxPayloadBytes)
+			validate.PayloadTooLargeMessage(maxPayload)
 	}
 	if err != nil {
 		return store.NewEvent{}, http.StatusBadRequest, CodeInvalidRequest, "could not read the request body"
@@ -137,7 +140,7 @@ func (s *Server) decodeEvent(w http.ResponseWriter, r *http.Request) (in store.N
 	if code, msg := validate.EventType(req.EventType); code != "" {
 		return store.NewEvent{}, http.StatusBadRequest, code, msg
 	}
-	if code, msg := validate.Payload(req.Payload, s.maxPayloadBytes); code != "" {
+	if code, msg := validate.Payload(req.Payload, maxPayload); code != "" {
 		status := http.StatusBadRequest
 		if code == validate.CodePayloadTooLarge {
 			status = http.StatusRequestEntityTooLarge
