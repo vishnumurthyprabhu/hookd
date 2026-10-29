@@ -200,7 +200,7 @@ Tables, created by the built-in migrations (`0001_init`, and `0002_admin` for th
 | `events` | ID (`msg_…`), account, event type, payload (text, exactly as received), idempotency key, creation time |
 | `deliveries` | one row per event and endpoint: status (`pending`, `in_progress`, `succeeded`, `failed`), response status, error, latency, attempt time, lease time. This table is the work queue. |
 | `settings` | the setting values saved in the admin UI: name, value, update time. No row means the environment or the default applies. |
-| `test_receivers` | ID (`trcv_…`), account, the test endpoint it belongs to, the status it answers with |
+| `test_receivers` | ID (`trcv_…`), account, the test endpoint it belongs to, the status it answers with, creation time |
 | `test_requests` | ID (`treq_…`), receiver, time, `webhook-id`, event type, the request's headers and body, whether the signature verified and why not, the status answered. Only the newest 100 per test endpoint are kept, and they are deleted with the endpoint. |
 | `schema_migrations` | which migrations have been applied |
 
