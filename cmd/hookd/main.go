@@ -19,6 +19,7 @@ import (
 	"hookd/internal/api"
 	"hookd/internal/config"
 	"hookd/internal/delivery"
+	"hookd/internal/retention"
 	"hookd/internal/settings"
 	"hookd/internal/store"
 )
@@ -168,6 +169,13 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 		pool.Run(workersCtx)
 	}()
 
+	retentionCtx, stopRetention := context.WithCancel(ctx)
+	retentionDone := make(chan struct{})
+	go func() {
+		defer close(retentionDone)
+		retention.New(s, log, func() time.Duration { return mgr.Current().Retention }).Run(retentionCtx)
+	}()
+
 	maxPayload := func() int64 { return mgr.Current().MaxPayloadBytes }
 	opts := []api.Option{
 		api.WithMaxPayloadBytesFunc(maxPayload),
@@ -187,6 +195,8 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 	}
 	srv := api.New(s, log, opts...)
 	err = srv.Serve(ctx, ln)
+	stopRetention()
+	<-retentionDone
 	// Workers finish the deliveries they are sending before they stop.
 	stopWorkers()
 	<-workersDone
