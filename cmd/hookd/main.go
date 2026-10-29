@@ -12,6 +12,8 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"text/tabwriter"
+	"time"
 
 	"hookd/internal/api"
 	"hookd/internal/config"
@@ -26,6 +28,8 @@ Commands:
   migrate                      Apply database migrations
   account create --name NAME   Create an account and print its API key
   apikey create --account ID   Create another API key for an account and print it
+  apikey list --account ID     List an account's API keys
+  apikey revoke --id KEY_ID    Revoke an API key so it no longer works
 
 Settings are read from HOOKD_* environment variables.
 `
@@ -58,11 +62,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		name, rest, cmd = "account create", rest[1:], accountCreate
 	case "apikey":
-		if len(rest) == 0 || rest[0] != "create" {
+		sub := map[string]func(config.Config, []string, io.Writer, io.Writer) int{
+			"create": apikeyCreate,
+			"list":   apikeyList,
+			"revoke": apikeyRevoke,
+		}
+		if len(rest) == 0 || sub[rest[0]] == nil {
 			fmt.Fprintf(stderr, "hookd: unknown apikey command %q\n\n%s", strings.Join(rest, " "), usage)
 			return 2
 		}
-		name, rest, cmd = "apikey create", rest[1:], apikeyCreate
+		name, rest, cmd = "apikey "+rest[0], rest[1:], sub[rest[0]]
 	default:
 		fmt.Fprintf(stderr, "hookd: unknown command %q\n\n%s", name, usage)
 		return 2
@@ -234,6 +243,83 @@ func apikeyCreate(cfg config.Config, args []string, stdout, stderr io.Writer) in
 	}
 	fmt.Fprintf(stdout, "account_id: %s\napi_key:    %s\n", accountID, key)
 	fmt.Fprintln(stderr, "Keep the API key safe: it is shown only once.")
+	return 0
+}
+
+// apikeyList prints the record of each of an account's API keys: its ID,
+// display prefix and creation time. The keys themselves are not stored.
+func apikeyList(cfg config.Config, args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("apikey list", stderr)
+	account := fs.String("account", "", "account ID, acct_... (required)")
+	if err := fs.Parse(args); err != nil {
+		return flagExit(err)
+	}
+	accountID := strings.TrimSpace(*account)
+	if accountID == "" {
+		fmt.Fprintln(stderr, "hookd apikey list: --account is required")
+		fs.Usage()
+		return 2
+	}
+	ctx := context.Background()
+	s, err := store.Open(ctx, cfg.DB)
+	if err != nil {
+		fmt.Fprintf(stderr, "hookd apikey list: %v\n", err)
+		return 1
+	}
+	defer s.Close()
+	keys, err := s.ListAPIKeys(ctx, accountID)
+	if errors.Is(err, store.ErrNotFound) {
+		fmt.Fprintf(stderr, "hookd apikey list: no account %q\n", accountID)
+		return 1
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "hookd apikey list: %v (has \"hookd migrate\" been run?)\n", err)
+		return 1
+	}
+	if len(keys) == 0 {
+		fmt.Fprintf(stderr, "Account %s has no API keys.\n", accountID)
+		return 0
+	}
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tPREFIX\tCREATED")
+	for _, k := range keys {
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", k.ID, k.Prefix, k.CreatedAt.UTC().Format(time.RFC3339))
+	}
+	tw.Flush()
+	return 0
+}
+
+// apikeyRevoke deletes an API key, so requests made with it get 401. The
+// account's other keys keep working.
+func apikeyRevoke(cfg config.Config, args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("apikey revoke", stderr)
+	idFlag := fs.String("id", "", "API key ID, key_... as shown by \"hookd apikey list\" (required)")
+	if err := fs.Parse(args); err != nil {
+		return flagExit(err)
+	}
+	id := strings.TrimSpace(*idFlag)
+	if id == "" {
+		fmt.Fprintln(stderr, "hookd apikey revoke: --id is required")
+		fs.Usage()
+		return 2
+	}
+	ctx := context.Background()
+	s, err := store.Open(ctx, cfg.DB)
+	if err != nil {
+		fmt.Fprintf(stderr, "hookd apikey revoke: %v\n", err)
+		return 1
+	}
+	defer s.Close()
+	k, err := s.DeleteAPIKey(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		fmt.Fprintf(stderr, "hookd apikey revoke: no API key %q\n", id)
+		return 1
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "hookd apikey revoke: %v (has \"hookd migrate\" been run?)\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "revoked %s (%s...) of account %s\n", k.ID, k.Prefix, k.AccountID)
 	return 0
 }
 

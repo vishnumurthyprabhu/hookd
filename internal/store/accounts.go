@@ -50,6 +50,81 @@ func (s *SQLStore) CreateAPIKey(ctx context.Context, accountID string) (APIKey, 
 	return k, key, nil
 }
 
+// ListAPIKeys implements Store. IDs are ULIDs, so ordering by ID is ordering
+// by creation time.
+func (s *SQLStore) ListAPIKeys(ctx context.Context, accountID string) ([]APIKey, error) {
+	keys := []APIKey{}
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var id string
+		err := s.queryRow(ctx, tx, `SELECT id FROM accounts WHERE id = ?`, accountID).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("store: list api keys: %w", err)
+		}
+		rows, err := s.query(ctx, tx,
+			`SELECT id, account_id, key_prefix, created_at FROM api_keys WHERE account_id = ? ORDER BY id`,
+			accountID)
+		if err != nil {
+			return fmt.Errorf("store: list api keys: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			k, err := scanAPIKey(rows)
+			if err != nil {
+				return fmt.Errorf("store: list api keys: %w", err)
+			}
+			keys = append(keys, k)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("store: list api keys: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+// DeleteAPIKey implements Store.
+func (s *SQLStore) DeleteAPIKey(ctx context.Context, id string) (APIKey, error) {
+	var k APIKey
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		k, err = scanAPIKey(s.queryRow(ctx, tx,
+			`SELECT id, account_id, key_prefix, created_at FROM api_keys WHERE id = ?`, id))
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("store: delete api key: %w", err)
+		}
+		if _, err := s.exec(ctx, tx, `DELETE FROM api_keys WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("store: delete api key: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return APIKey{}, err
+	}
+	return k, nil
+}
+
+// scanAPIKey reads one row of id, account_id, key_prefix, created_at.
+func scanAPIKey(sc scanner) (APIKey, error) {
+	var (
+		k       APIKey
+		created dbTime
+	)
+	if err := sc.Scan(&k.ID, &k.AccountID, &k.Prefix, &created); err != nil {
+		return APIKey{}, err
+	}
+	k.CreatedAt = created.Time
+	return k, nil
+}
+
 // AccountByAPIKeyHash implements Store.
 func (s *SQLStore) AccountByAPIKeyHash(ctx context.Context, keyHash string) (Account, error) {
 	var (

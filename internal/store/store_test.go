@@ -218,6 +218,98 @@ func TestCreateAPIKeyUnknownAccount(t *testing.T) {
 	})
 }
 
+func TestListAPIKeys(t *testing.T) {
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		now := time.Date(2026, 10, 29, 12, 0, 0, 123456789, time.UTC)
+		s := db.New(t, store.WithClock(func() time.Time { return now }))
+
+		a, _ := s.CreateAccount(ctx, "a")
+		b, _ := s.CreateAccount(ctx, "b")
+		empty, _ := s.CreateAccount(ctx, "empty")
+		var want []store.APIKey
+		for range 3 {
+			rec, _, err := s.CreateAPIKey(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec.CreatedAt = rec.CreatedAt.Truncate(time.Microsecond)
+			want = append(want, rec)
+			if _, _, err := s.CreateAPIKey(ctx, b.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		got, err := s.ListAPIKeys(ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("ListAPIKeys = %+v, want %+v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("key %d = %+v, want %+v", i, got[i], want[i])
+			}
+		}
+
+		got, err = s.ListAPIKeys(ctx, empty.ID)
+		if err != nil || got == nil || len(got) != 0 {
+			t.Fatalf("account without keys: ListAPIKeys = %#v, %v; want empty slice", got, err)
+		}
+		if _, err := s.ListAPIKeys(ctx, "acct_missing"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("unknown account: err = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+func TestDeleteAPIKey(t *testing.T) {
+	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
+		ctx := context.Background()
+		now := time.Date(2026, 10, 29, 12, 0, 0, 123456789, time.UTC)
+		s := db.New(t, store.WithClock(func() time.Time { return now }))
+
+		acct, _ := s.CreateAccount(ctx, "acme")
+		old, oldKey, err := s.CreateAPIKey(ctx, acct.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept, keptKey, err := s.CreateAPIKey(ctx, acct.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := s.DeleteAPIKey(ctx, old.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		old.CreatedAt = old.CreatedAt.Truncate(time.Microsecond)
+		if got != old {
+			t.Fatalf("DeleteAPIKey = %+v, want %+v", got, old)
+		}
+		if _, err := s.AccountByAPIKeyHash(ctx, ids.HashAPIKey(oldKey)); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("deleted key still authenticates: err = %v", err)
+		}
+		if a, err := s.AccountByAPIKeyHash(ctx, ids.HashAPIKey(keptKey)); err != nil || a.ID != acct.ID {
+			t.Fatalf("other key after delete: %+v, %v", a, err)
+		}
+		keys, err := s.ListAPIKeys(ctx, acct.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(keys) != 1 || keys[0].ID != kept.ID {
+			t.Fatalf("keys after delete = %+v, want only %s", keys, kept.ID)
+		}
+
+		if _, err := s.DeleteAPIKey(ctx, old.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("second delete: err = %v, want ErrNotFound", err)
+		}
+		if _, err := s.DeleteAPIKey(ctx, "key_missing"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("unknown key: err = %v, want ErrNotFound", err)
+		}
+	})
+}
+
 func TestStoreOnlyKeepsKeyHash(t *testing.T) {
 	storetest.Run(t, func(t *testing.T, db *storetest.DB) {
 		ctx := context.Background()

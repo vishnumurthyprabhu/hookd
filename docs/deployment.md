@@ -245,7 +245,29 @@ api_key:    hk_Zq0b1Cq7mY3d8xvJr2sKfW9uTnE4hLpA6gRiO5cVwXs
 Keep the API key safe: it is shown only once.
 ```
 
-An account can have several keys, and each one keeps working when another is created. There is no command to revoke a key yet.
+An account can have several keys, and each one keeps working when another is created. To retire a lost or leaked key, list the account's keys. Only each key's ID, its first characters and its creation time are shown, oldest first:
+
+```bash
+hookd apikey list --account acct_01M636GV96GQFMA7V1G5N17DPQ
+```
+
+```
+ID                              PREFIX       CREATED
+key_01M636GV9BW7N4XKQ2T8ZJ3RYD  hk_1r41QRqt  2026-10-29T07:02:11Z
+key_01M637MFSVMW25MCX5BR3DGXNR  hk_Zq0b1Cq7  2026-10-29T07:05:20Z
+```
+
+Then revoke the old one by its ID:
+
+```bash
+hookd apikey revoke --id key_01M636GV9BW7N4XKQ2T8ZJ3RYD
+```
+
+```
+revoked key_01M636GV9BW7N4XKQ2T8ZJ3RYD (hk_1r41QRqt...) of account acct_01M636GV96GQFMA7V1G5N17DPQ
+```
+
+From then on, requests with that key get `401`. The account's other keys, endpoints and events are not touched. To rotate a key, create the new one, give it to the customer, and revoke the old one once they have switched. Revoking an account's last key leaves it with none until `hookd apikey create` issues another.
 
 ## Upgrading
 

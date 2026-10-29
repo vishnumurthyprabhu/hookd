@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -112,6 +113,21 @@ func TestRun(t *testing.T) {
 		},
 		{name: "apikey create without account", args: []string{"apikey", "create"}, code: 2, stderr: "--account is required"},
 		{name: "apikey without subcommand", args: []string{"apikey"}, code: 2, stderr: "unknown apikey command"},
+		{name: "apikey unknown subcommand", args: []string{"apikey", "rotate"}, code: 2, stderr: "unknown apikey command"},
+		{
+			name:   "apikey list without migrations",
+			args:   []string{"apikey", "list", "--account", "acct_x"},
+			code:   1,
+			stderr: `hookd migrate`,
+		},
+		{name: "apikey list without account", args: []string{"apikey", "list"}, code: 2, stderr: "--account is required"},
+		{
+			name:   "apikey revoke without migrations",
+			args:   []string{"apikey", "revoke", "--id", "key_x"},
+			code:   1,
+			stderr: `hookd migrate`,
+		},
+		{name: "apikey revoke without id", args: []string{"apikey", "revoke"}, code: 2, stderr: "--id is required"},
 		{name: "unknown flag", args: []string{"serve", "--nope"}, code: 2, stderr: "flag provided but not defined"},
 		{
 			name:   "bad config",
@@ -258,5 +274,90 @@ func TestAPIKeyCreate(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `no account "acct_unknown"`) || stdout.Len() != 0 {
 		t.Fatalf("unknown account: stdout %q, stderr %q", stdout.String(), stderr.String())
+	}
+}
+
+func TestAPIKeyListAndRevoke(t *testing.T) {
+	path := useTempDB(t)
+	runOK(t, "migrate")
+	re := regexp.MustCompile(`(?m)^account_id: (\S+)\napi_key: +(\S+)$`)
+	m := re.FindStringSubmatch(runOK(t, "account", "create", "--name", "acme"))
+	if m == nil {
+		t.Fatal("account create printed no key")
+	}
+	acctID, oldKey := m[1], m[2]
+	m = re.FindStringSubmatch(runOK(t, "apikey", "create", "--account", acctID))
+	if m == nil {
+		t.Fatal("apikey create printed no key")
+	}
+	newKey := m[2]
+
+	cfg := config.Default().DB
+	cfg.Path = path
+	s, err := store.Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	keys, err := s.ListAPIKeys(context.Background(), acctID)
+	if err != nil || len(keys) != 2 {
+		t.Fatalf("ListAPIKeys = %+v, %v; want 2 keys", keys, err)
+	}
+
+	out := runOK(t, "apikey", "list", "--account", acctID)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "ID") {
+		t.Fatalf("apikey list printed %q, want a header and 2 keys", out)
+	}
+	for i, k := range keys {
+		f := strings.Fields(lines[i+1])
+		if len(f) != 3 || f[0] != k.ID || f[1] != k.Prefix || f[2] != k.CreatedAt.UTC().Format(time.RFC3339) {
+			t.Errorf("apikey list line %q, want %s %s %s", lines[i+1], k.ID, k.Prefix, k.CreatedAt.UTC().Format(time.RFC3339))
+		}
+	}
+	if strings.Contains(out, oldKey) || strings.Contains(out, newKey) {
+		t.Fatal("apikey list printed a full key")
+	}
+	if !strings.HasPrefix(oldKey, keys[0].Prefix) {
+		t.Fatalf("first listed key %s is not the oldest", keys[0].Prefix)
+	}
+
+	out = runOK(t, "apikey", "revoke", "--id", keys[0].ID)
+	if !strings.Contains(out, "revoked "+keys[0].ID) || !strings.Contains(out, acctID) {
+		t.Fatalf("apikey revoke printed %q", out)
+	}
+	if _, err := s.AccountByAPIKeyHash(context.Background(), ids.HashAPIKey(oldKey)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("revoked key still authenticates: err = %v", err)
+	}
+	if a, err := s.AccountByAPIKeyHash(context.Background(), ids.HashAPIKey(newKey)); err != nil || a.ID != acctID {
+		t.Fatalf("other key after revoke: %+v, %v", a, err)
+	}
+	if out := runOK(t, "apikey", "list", "--account", acctID); strings.Contains(out, keys[0].ID) || !strings.Contains(out, keys[1].ID) {
+		t.Fatalf("apikey list after revoke printed %q", out)
+	}
+
+	for _, tc := range []struct {
+		args   []string
+		stderr string
+	}{
+		{[]string{"apikey", "revoke", "--id", keys[0].ID}, `no API key "` + keys[0].ID + `"`},
+		{[]string{"apikey", "list", "--account", "acct_unknown"}, `no account "acct_unknown"`},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(tc.args, &stdout, &stderr); code != 1 {
+			t.Fatalf("%v: exit code %d, want 1", tc.args, code)
+		}
+		if !strings.Contains(stderr.String(), tc.stderr) || stdout.Len() != 0 {
+			t.Fatalf("%v: stdout %q, stderr %q", tc.args, stdout.String(), stderr.String())
+		}
+	}
+
+	runOK(t, "apikey", "revoke", "--id", keys[1].ID)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"apikey", "list", "--account", acctID}, &stdout, &stderr); code != 0 {
+		t.Fatalf("list of account without keys: exit code %d, stderr %q", code, stderr.String())
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "no API keys") {
+		t.Fatalf("list of account without keys: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
 }

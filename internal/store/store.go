@@ -29,6 +29,14 @@ type Store interface {
 	// cannot be read again. It returns ErrNotFound if the account does not
 	// exist.
 	CreateAPIKey(ctx context.Context, accountID string) (APIKey, string, error)
+	// ListAPIKeys returns the records of an account's API keys, oldest
+	// first. It returns ErrNotFound if the account does not exist, and an
+	// empty slice if it has no keys.
+	ListAPIKeys(ctx context.Context, accountID string) ([]APIKey, error)
+	// DeleteAPIKey deletes the API key with the given record ID, so the key
+	// no longer authenticates, and returns the deleted record. It returns
+	// ErrNotFound if there is no such key.
+	DeleteAPIKey(ctx context.Context, id string) (APIKey, error)
 	// AccountByAPIKeyHash returns the account that owns the API key with the
 	// given hash (see ids.HashAPIKey), or ErrNotFound.
 	AccountByAPIKeyHash(ctx context.Context, keyHash string) (Account, error)

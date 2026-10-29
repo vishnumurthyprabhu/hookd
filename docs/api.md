@@ -6,7 +6,7 @@ The API is JSON over HTTP. Every route under `/v1` needs an API key, sent as a b
 Authorization: Bearer hk_...
 ```
 
-The operator creates keys with `hookd account create` and `hookd apikey create` (see [Deploy to production](deployment.md#9-create-accounts)). Each key belongs to one account, and an account sees only its own endpoints and events. Anything that belongs to another account answers 404, as if it did not exist.
+The operator creates keys with `hookd account create` and `hookd apikey create`, and revokes them with `hookd apikey revoke` (see [Deploy to production](deployment.md#9-create-accounts)). Each key belongs to one account, and an account sees only its own endpoints and events. Anything that belongs to another account answers 404, as if it did not exist.
 
 The examples assume Hookd at `http://localhost:8080` and the key in `$HOOKD_API_KEY`, as in the [local setup](../README.md#set-up-and-run-from-scratch).
 
