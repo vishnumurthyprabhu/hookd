@@ -55,6 +55,18 @@ type Store interface {
 	// same ErrNotFound rules as GetEndpoint. A deleted endpoint is never
 	// returned or changed again.
 	DeleteEndpoint(ctx context.Context, accountID, id string) error
+
+	// CreateEvent stores an event for an account and, in the same
+	// transaction, one pending delivery for each of the account's enabled,
+	// non-deleted endpoints that subscribe to its type. If in has an
+	// idempotency key and the account has an event with that key created
+	// within the idempotency window, that event is returned instead and
+	// nothing is created; created is false then. An older event with the key
+	// loses it. It returns ErrNotFound if the account does not exist.
+	CreateEvent(ctx context.Context, accountID string, in NewEvent) (e Event, created bool, err error)
+	// GetEvent returns one of the account's events with its deliveries, or
+	// ErrNotFound if it does not exist or belongs to another account.
+	GetEvent(ctx context.Context, accountID, id string) (Event, error)
 }
 
 // Account is a customer of Hookd. All other records belong to one.
@@ -94,6 +106,49 @@ type NewEndpoint struct {
 	URL         string
 	Description string
 	EventTypes  []string
+}
+
+// NewEvent holds the fields of an event to create. Input is checked by the
+// API before it reaches the store.
+type NewEvent struct {
+	EventType string
+	// Payload is stored and sent exactly as given.
+	Payload []byte
+	// IdempotencyKey is optional. Empty means none.
+	IdempotencyKey string
+}
+
+// Event is a message sent by an account, with its delivery to each target
+// endpoint.
+type Event struct {
+	ID             string
+	AccountID      string
+	EventType      string
+	Payload        []byte
+	IdempotencyKey string
+	CreatedAt      time.Time
+	// Deliveries holds one entry per target endpoint, ordered by endpoint
+	// ID. It is never nil.
+	Deliveries []DeliveryStatus
+}
+
+// Delivery states.
+const (
+	DeliveryPending    = "pending"
+	DeliveryInProgress = "in_progress"
+	DeliverySucceeded  = "succeeded"
+	DeliveryFailed     = "failed"
+)
+
+// DeliveryStatus is where the delivery of an event to one endpoint stands.
+type DeliveryStatus struct {
+	EndpointID string
+	// Status is one of the Delivery* states.
+	Status string
+	// ResponseStatus is the endpoint's HTTP status, or 0 if there was none.
+	ResponseStatus int
+	// Error describes why the delivery failed, or is empty.
+	Error string
 }
 
 // EndpointUpdate holds the fields to change on an endpoint. Nil fields are

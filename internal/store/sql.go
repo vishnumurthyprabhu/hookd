@@ -19,6 +19,8 @@ type SQLStore struct {
 	db  *sql.DB
 	d   dialect
 	now func() time.Time
+	// idempotencyWindow is how long an event's idempotency key is honoured.
+	idempotencyWindow time.Duration
 }
 
 var _ Store = (*SQLStore)(nil)
@@ -30,6 +32,12 @@ type Option func(*SQLStore)
 // time.Now. Tests use it to control timestamps, windows and leases.
 func WithClock(now func() time.Time) Option {
 	return func(s *SQLStore) { s.now = now }
+}
+
+// WithIdempotencyWindow sets how long CreateEvent honours an idempotency key
+// (HOOKD_IDEMPOTENCY_WINDOW). The default is config.Default's.
+func WithIdempotencyWindow(d time.Duration) Option {
+	return func(s *SQLStore) { s.idempotencyWindow = d }
 }
 
 // Open connects to the database described by cfg and checks that it can be
@@ -61,7 +69,7 @@ func Open(ctx context.Context, cfg config.DB, opts ...Option) (*SQLStore, error)
 		db.SetMaxOpenConns(maxConns)
 		db.SetMaxIdleConns(maxConns)
 	}
-	s := &SQLStore{db: db, d: d, now: time.Now}
+	s := &SQLStore{db: db, d: d, now: time.Now, idempotencyWindow: config.Default().IdempotencyWindow}
 	for _, opt := range opts {
 		opt(s)
 	}

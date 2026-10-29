@@ -73,7 +73,7 @@ func serve(cfg config.Config, args []string, stdout, stderr io.Writer) int {
 	log.Debug("starting", "listen_addr", cfg.ListenAddr, "db_driver", cfg.DB.Driver)
 
 	ctx := context.Background()
-	s, err := store.Open(ctx, cfg.DB)
+	s, err := store.Open(ctx, cfg.DB, store.WithIdempotencyWindow(cfg.IdempotencyWindow))
 	if err != nil {
 		log.Error("open database", "err", err)
 		return 1
