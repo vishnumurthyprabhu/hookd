@@ -155,6 +155,28 @@ type Store interface {
 	// with that number. r.Outcome must be AttemptSucceeded or AttemptFailed,
 	// and only a failure can have a next attempt.
 	RecordAttempt(ctx context.Context, deliveryID string, r AttemptResult) (Attempt, error)
+	// ListEventAttempts returns up to f.Limit attempts of one of the
+	// account's events, across its endpoints, oldest first. f.EndpointID, if
+	// not empty, keeps only the attempts to that endpoint. f.After, if not
+	// empty, keeps only attempts whose ID sorts after it, so the last ID of
+	// one page is the cursor for the next. f.Outcome and f.Before are not
+	// used. f.Limit must be positive. It returns ErrNotFound if the event
+	// does not exist or belongs to another account, and an empty slice if it
+	// has no such attempts.
+	ListEventAttempts(ctx context.Context, accountID, eventID string, f AttemptFilter) ([]Attempt, error)
+	// ListEndpointAttempts returns up to f.Limit attempts made to one of the
+	// account's endpoints, across its events, newest first. The endpoint may
+	// have been deleted. f.Outcome, if not empty, keeps only attempts with
+	// that outcome (AttemptSucceeded or AttemptFailed). f.Before, if not
+	// empty, keeps only attempts whose ID sorts before it, so the last ID of
+	// one page is the cursor for the next. f.EndpointID and f.After are not
+	// used. f.Limit must be positive. It returns ErrNotFound if the endpoint
+	// does not exist or belongs to another account, and an empty slice if it
+	// has no such attempts.
+	ListEndpointAttempts(ctx context.Context, accountID, endpointID string, f AttemptFilter) ([]Attempt, error)
+	// GetAttempt returns one of the account's attempts, or ErrNotFound if it
+	// does not exist or belongs to another account.
+	GetAttempt(ctx context.Context, accountID, id string) (Attempt, error)
 	// CountDeliveriesByStatus returns the number of deliveries in each of
 	// the Delivery* states, across all accounts. Every state is in the map,
 	// with 0 if no delivery is in it.
@@ -459,6 +481,22 @@ type Attempt struct {
 	Latency time.Duration
 	// Error describes why the attempt failed, or is empty.
 	Error string
+}
+
+// AttemptFilter selects the attempts ListEventAttempts and
+// ListEndpointAttempts return. Each list uses only some of the fields; see
+// there.
+type AttemptFilter struct {
+	// EndpointID, if not empty, keeps only attempts to this endpoint.
+	EndpointID string
+	// Outcome, if not empty, keeps only attempts with this outcome.
+	Outcome string
+	// After, if not empty, keeps only attempts whose ID sorts after it.
+	After string
+	// Before, if not empty, keeps only attempts whose ID sorts before it.
+	Before string
+	// Limit is the most attempts returned. It must be positive.
+	Limit int
 }
 
 // EndpointUpdate holds the fields to change on an endpoint. Nil fields are
