@@ -7,11 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
-	"strings"
 	"time"
 
 	"hookd/internal/store"
+	"hookd/internal/validate"
 )
 
 const (
@@ -19,17 +18,7 @@ const (
 	// POST /v1/events body may be, to leave room for the event type and the
 	// JSON around the payload.
 	envelopeOverhead = 4 << 10
-	// maxIdempotencyKeyLen is the longest Idempotency-Key header accepted.
-	maxIdempotencyKeyLen = 255
 )
-
-// eventTypePattern is what an event type name looks like (R8).
-var eventTypePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
-
-// validEventType reports whether t is a valid event type name (R8).
-func validEventType(t string) bool {
-	return eventTypePattern.MatchString(t)
-}
 
 type createEventRequest struct {
 	EventType string          `json:"event_type"`
@@ -84,10 +73,9 @@ func newEventResponse(e store.Event) eventResponse {
 func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	acct, _ := accountFrom(r.Context())
 
-	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if len(key) > maxIdempotencyKeyLen {
-		writeError(w, http.StatusBadRequest, CodeInvalidIdempotencyKey,
-			fmt.Sprintf("Idempotency-Key must be at most %d bytes", maxIdempotencyKeyLen))
+	key, code, msg := validate.IdempotencyKey(r.Header.Get("Idempotency-Key"))
+	if code != "" {
+		writeError(w, http.StatusBadRequest, code, msg)
 		return
 	}
 
@@ -117,14 +105,10 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 // decodeEvent reads and checks the body of POST /v1/events. On failure it
 // returns the status, code and message of the error to answer with.
 func (s *Server) decodeEvent(w http.ResponseWriter, r *http.Request) (in store.NewEvent, status int, code, msg string) {
-	tooLarge := func() (store.NewEvent, int, string, string) {
-		return store.NewEvent{}, http.StatusRequestEntityTooLarge, CodePayloadTooLarge,
-			fmt.Sprintf("payload is larger than %d bytes", s.maxPayloadBytes)
-	}
-
 	body, oversized, err := readBody(w, r, s.maxPayloadBytes+envelopeOverhead)
 	if oversized {
-		return tooLarge()
+		return store.NewEvent{}, http.StatusRequestEntityTooLarge, CodePayloadTooLarge,
+			validate.PayloadTooLargeMessage(s.maxPayloadBytes)
 	}
 	if err != nil {
 		return store.NewEvent{}, http.StatusBadRequest, CodeInvalidRequest, "could not read the request body"
@@ -150,18 +134,15 @@ func (s *Server) decodeEvent(w http.ResponseWriter, r *http.Request) (in store.N
 		return store.NewEvent{}, http.StatusBadRequest, CodeInvalidJSON, "request body must hold a single JSON object"
 	}
 
-	if !validEventType(req.EventType) {
-		return store.NewEvent{}, http.StatusBadRequest, CodeInvalidEventType,
-			"event_type must be 1 to 128 letters, digits, '.', '_' or '-'"
+	if code, msg := validate.EventType(req.EventType); code != "" {
+		return store.NewEvent{}, http.StatusBadRequest, code, msg
 	}
-	if len(req.Payload) == 0 {
-		return store.NewEvent{}, http.StatusBadRequest, CodeInvalidPayload, "payload is required"
-	}
-	if req.Payload[0] != '{' {
-		return store.NewEvent{}, http.StatusBadRequest, CodeInvalidPayload, "payload must be a JSON object"
-	}
-	if int64(len(req.Payload)) > s.maxPayloadBytes {
-		return tooLarge()
+	if code, msg := validate.Payload(req.Payload, s.maxPayloadBytes); code != "" {
+		status := http.StatusBadRequest
+		if code == validate.CodePayloadTooLarge {
+			status = http.StatusRequestEntityTooLarge
+		}
+		return store.NewEvent{}, status, code, msg
 	}
 	return store.NewEvent{EventType: req.EventType, Payload: req.Payload}, 0, "", ""
 }

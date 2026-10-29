@@ -7,24 +7,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"time"
 
 	"hookd/internal/store"
+	"hookd/internal/validate"
 )
 
 const (
 	// maxEndpointBodyBytes is the largest body POST and PATCH
 	// /v1/endpoints accept.
 	maxEndpointBodyBytes = 64 << 10
-	// maxURLLen is the longest endpoint URL accepted.
-	maxURLLen = 2048
-	// maxDescriptionLen is the longest endpoint description accepted, in
-	// bytes.
-	maxDescriptionLen = 1024
-	// maxEventTypes is the most event types one endpoint may subscribe to.
-	maxEventTypes = 100
 
 	// defaultListLimit and maxListLimit bound the page size of
 	// GET /v1/endpoints.
@@ -96,15 +89,15 @@ func (s *Server) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, code, msg)
 		return
 	}
-	if code, msg := checkURL(req.URL); code != "" {
+	if code, msg := validate.URL(req.URL); code != "" {
 		writeError(w, http.StatusBadRequest, code, msg)
 		return
 	}
-	if code, msg := checkDescription(req.Description); code != "" {
+	if code, msg := validate.Description(req.Description); code != "" {
 		writeError(w, http.StatusBadRequest, code, msg)
 		return
 	}
-	types, code, msg := checkEventTypes(req.EventTypes)
+	types, code, msg := validate.EventTypes(req.EventTypes)
 	if code != "" {
 		writeError(w, http.StatusBadRequest, code, msg)
 		return
@@ -184,20 +177,20 @@ func (s *Server) updateEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	u := store.EndpointUpdate{Description: req.Description, Enabled: req.Enabled}
 	if req.URL != nil {
-		if code, msg := checkURL(*req.URL); code != "" {
+		if code, msg := validate.URL(*req.URL); code != "" {
 			writeError(w, http.StatusBadRequest, code, msg)
 			return
 		}
 		u.URL = req.URL
 	}
 	if req.Description != nil {
-		if code, msg := checkDescription(*req.Description); code != "" {
+		if code, msg := validate.Description(*req.Description); code != "" {
 			writeError(w, http.StatusBadRequest, code, msg)
 			return
 		}
 	}
 	if req.EventTypes != nil {
-		types, code, msg := checkEventTypes(*req.EventTypes)
+		types, code, msg := validate.EventTypes(*req.EventTypes)
 		if code != "" {
 			writeError(w, http.StatusBadRequest, code, msg)
 			return
@@ -279,49 +272,4 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) (status int, code
 		return http.StatusBadRequest, CodeInvalidJSON, "request body must hold a single JSON object"
 	}
 	return 0, "", ""
-}
-
-// checkURL checks that raw is an absolute http or https URL with a host (R4).
-func checkURL(raw string) (code, msg string) {
-	const want = "url must be an absolute http or https URL with a host"
-	if raw == "" {
-		return CodeInvalidURL, "url is required"
-	}
-	if len(raw) > maxURLLen {
-		return CodeInvalidURL, fmt.Sprintf("url must be at most %d bytes", maxURLLen)
-	}
-	u, err := url.Parse(raw)
-	if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.Opaque != "" {
-		return CodeInvalidURL, want
-	}
-	return "", ""
-}
-
-// checkDescription checks the length of an endpoint description.
-func checkDescription(d string) (code, msg string) {
-	if len(d) > maxDescriptionLen {
-		return CodeInvalidRequest, fmt.Sprintf("description must be at most %d bytes", maxDescriptionLen)
-	}
-	return "", ""
-}
-
-// checkEventTypes checks each event type name (R8) and returns the list
-// without duplicates, in the order given. An empty list means all types.
-func checkEventTypes(types []string) (out []string, code, msg string) {
-	if len(types) > maxEventTypes {
-		return nil, CodeInvalidEventType, fmt.Sprintf("event_types may list at most %d types", maxEventTypes)
-	}
-	out = []string{}
-	seen := map[string]bool{}
-	for _, t := range types {
-		if !validEventType(t) {
-			return nil, CodeInvalidEventType,
-				fmt.Sprintf("event type %q must be 1 to 128 letters, digits, '.', '_' or '-'", t)
-		}
-		if !seen[t] {
-			seen[t] = true
-			out = append(out, t)
-		}
-	}
-	return out, "", ""
 }

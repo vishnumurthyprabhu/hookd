@@ -3,9 +3,12 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+
+	"hookd/internal/validate"
 )
 
-// Error codes returned in the "code" field of error responses.
+// Error codes returned in the "code" field of error responses. The input
+// check codes come from package validate.
 const (
 	CodeUnauthorized     = "unauthorized"
 	CodeNotFound         = "not_found"
@@ -14,12 +17,12 @@ const (
 	CodeInternal         = "internal_error"
 
 	CodeInvalidJSON           = "invalid_json"
-	CodeInvalidRequest        = "invalid_request"
-	CodeInvalidURL            = "invalid_url"
-	CodeInvalidEventType      = "invalid_event_type"
-	CodeInvalidPayload        = "invalid_payload"
-	CodePayloadTooLarge       = "payload_too_large"
-	CodeInvalidIdempotencyKey = "invalid_idempotency_key"
+	CodeInvalidRequest        = validate.CodeInvalidRequest
+	CodeInvalidURL            = validate.CodeInvalidURL
+	CodeInvalidEventType      = validate.CodeInvalidEventType
+	CodeInvalidPayload        = validate.CodeInvalidPayload
+	CodePayloadTooLarge       = validate.CodePayloadTooLarge
+	CodeInvalidIdempotencyKey = validate.CodeInvalidIdempotencyKey
 )
 
 type errorBody struct {
