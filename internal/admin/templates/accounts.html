@@ -18,7 +18,7 @@
 <thead><tr><th>Name</th><th>ID</th><th>Created</th><th>Endpoints</th><th>API keys</th></tr></thead>
 <tbody>
 {{range .Accounts}}
-<tr><td>{{.Name}}</td><td><code>{{.ID}}</code></td><td>{{time .CreatedAt}}</td><td>{{.Endpoints}}</td><td>{{.APIKeys}}</td></tr>
+<tr><td><a href="/admin/accounts/{{.ID}}">{{.Name}}</a></td><td><code>{{.ID}}</code></td><td>{{time .CreatedAt}}</td><td>{{.Endpoints}}</td><td>{{.APIKeys}}</td></tr>
 {{end}}
 </tbody>
 </table>

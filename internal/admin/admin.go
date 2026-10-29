@@ -49,6 +49,10 @@ func New(st store.Store, log *slog.Logger) *Handler {
 	mux.Handle("GET /admin/static/", http.StripPrefix("/admin/static/", http.FileServerFS(static)))
 	mux.HandleFunc("GET /admin/{$}", h.listAccounts)
 	mux.HandleFunc("POST /admin/accounts", h.createAccount)
+	mux.HandleFunc("GET /admin/accounts/{acct}", h.showAccount)
+	mux.HandleFunc("POST /admin/accounts/{acct}/keys", h.createKey)
+	mux.HandleFunc("GET /admin/accounts/{acct}/keys/{key}/revoke", h.confirmRevokeKey)
+	mux.HandleFunc("POST /admin/accounts/{acct}/keys/{key}/revoke", h.revokeKey)
 	mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) { h.notFound(w, r) })
 
 	cop := http.NewCrossOriginProtection()

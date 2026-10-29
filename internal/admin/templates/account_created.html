@@ -3,5 +3,5 @@
 <p class="warning">Copy the API key now. It is shown only this once; afterwards only its prefix is shown.</p>
 <p class="secret"><code id="api-key">{{.Key}}</code> <button type="button" class="copy" data-copy="api-key" hidden>Copy</button></p>
 <p>Use it with the API as <code>Authorization: Bearer &lt;key&gt;</code>.</p>
-<p><a href="/admin/">Back to the accounts</a></p>
+<p><a href="/admin/accounts/{{.Account.ID}}">Go to the account</a> · <a href="/admin/">Back to the accounts</a></p>
 {{end}}

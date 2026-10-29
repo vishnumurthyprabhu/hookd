@@ -1,0 +1,8 @@
+{{define "content"}}
+<p>Revoke the API key <code>{{.Key.Prefix}}…</code> of the account <strong>{{.Account.Name}}</strong> (<code>{{.Account.ID}}</code>), created {{time .Key.CreatedAt}}?</p>
+<p class="warning">The key stops working with the API at once. This cannot be undone.</p>
+<form method="post" action="/admin/accounts/{{.Account.ID}}/keys/{{.Key.ID}}/revoke">
+<button type="submit">Revoke key</button>
+<a href="/admin/accounts/{{.Account.ID}}">Cancel</a>
+</form>
+{{end}}

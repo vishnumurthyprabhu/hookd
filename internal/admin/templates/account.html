@@ -1,0 +1,26 @@
+{{define "content"}}
+<p>Account ID <code>{{.Account.ID}}</code>, created {{time .Account.CreatedAt}}.</p>
+<p><a href="/admin/accounts/{{.Account.ID}}/endpoints">Endpoints</a> · <a href="/admin/accounts/{{.Account.ID}}/events">Events</a></p>
+
+<section>
+<h2>API keys</h2>
+{{if .Keys}}
+<div class="scroll">
+<table>
+<thead><tr><th>Prefix</th><th>Created</th><th></th></tr></thead>
+<tbody>
+{{range .Keys}}
+<tr><td><code>{{.Prefix}}…</code></td><td>{{time .CreatedAt}}</td><td><a href="/admin/accounts/{{$.Account.ID}}/keys/{{.ID}}/revoke">Revoke</a></td></tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{else}}
+<p>This account has no API keys, so it cannot use the API. Create one below.</p>
+{{end}}
+<form method="post" action="/admin/accounts/{{.Account.ID}}/keys">
+<button type="submit">Create API key</button>
+<p class="hint">The new key is shown once; afterwards only its prefix is shown.</p>
+</form>
+</section>
+{{end}}
