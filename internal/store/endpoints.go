@@ -16,6 +16,23 @@ const endpointColumns = `id, account_id, url, description, event_types, enabled,
 
 // CreateEndpoint implements Store.
 func (s *SQLStore) CreateEndpoint(ctx context.Context, accountID string, in NewEndpoint) (Endpoint, string, error) {
+	var (
+		e      Endpoint
+		secret string
+	)
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		e, secret, err = s.insertEndpoint(ctx, tx, accountID, in)
+		return err
+	})
+	if err != nil {
+		return Endpoint{}, "", err
+	}
+	return e, secret, nil
+}
+
+// insertEndpoint creates an endpoint in tx as CreateEndpoint describes.
+func (s *SQLStore) insertEndpoint(ctx context.Context, tx *sql.Tx, accountID string, in NewEndpoint) (Endpoint, string, error) {
 	secret, err := ids.NewSecret()
 	if err != nil {
 		return Endpoint{}, "", fmt.Errorf("store: create endpoint: %w", err)
@@ -36,26 +53,20 @@ func (s *SQLStore) CreateEndpoint(ctx context.Context, accountID string, in NewE
 		return Endpoint{}, "", fmt.Errorf("store: create endpoint: %w", err)
 	}
 
-	err = s.inTx(ctx, func(tx *sql.Tx) error {
-		var id string
-		err := s.queryRow(ctx, tx, `SELECT id FROM accounts WHERE id = ?`, accountID).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
-			return fmt.Errorf("store: create endpoint: %w", err)
-		}
-		if _, err := s.exec(ctx, tx,
-			`INSERT INTO endpoints (id, account_id, url, description, event_types, enabled, secret, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			e.ID, e.AccountID, e.URL, e.Description, string(types), e.Enabled, secret,
-			s.d.timeArg(e.CreatedAt), s.d.timeArg(e.UpdatedAt)); err != nil {
-			return fmt.Errorf("store: create endpoint: %w", err)
-		}
-		return nil
-	})
+	var id string
+	err = s.queryRow(ctx, tx, `SELECT id FROM accounts WHERE id = ?`, accountID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Endpoint{}, "", ErrNotFound
+	}
 	if err != nil {
-		return Endpoint{}, "", err
+		return Endpoint{}, "", fmt.Errorf("store: create endpoint: %w", err)
+	}
+	if _, err := s.exec(ctx, tx,
+		`INSERT INTO endpoints (id, account_id, url, description, event_types, enabled, secret, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, e.AccountID, e.URL, e.Description, string(types), e.Enabled, secret,
+		s.d.timeArg(e.CreatedAt), s.d.timeArg(e.UpdatedAt)); err != nil {
+		return Endpoint{}, "", fmt.Errorf("store: create endpoint: %w", err)
 	}
 	return e, secret, nil
 }
@@ -170,21 +181,30 @@ func (s *SQLStore) UpdateEndpoint(ctx context.Context, accountID, id string, u E
 // DeleteEndpoint implements Store.
 func (s *SQLStore) DeleteEndpoint(ctx context.Context, accountID, id string) error {
 	now := s.d.timeArg(s.nowUTC())
-	res, err := s.exec(ctx, s.db,
-		`UPDATE endpoints SET deleted_at = ?, updated_at = ?
-		WHERE account_id = ? AND id = ? AND deleted_at IS NULL`,
-		now, now, accountID, id)
-	if err != nil {
-		return fmt.Errorf("store: delete endpoint: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("store: delete endpoint: %w", err)
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		res, err := s.exec(ctx, tx,
+			`UPDATE endpoints SET deleted_at = ?, updated_at = ?
+			WHERE account_id = ? AND id = ? AND deleted_at IS NULL`,
+			now, now, accountID, id)
+		if err != nil {
+			return fmt.Errorf("store: delete endpoint: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("store: delete endpoint: %w", err)
+		}
+		if n == 0 {
+			return ErrNotFound
+		}
+		// The test_receivers row stays, so that its URL answers 404.
+		if _, err := s.exec(ctx, tx,
+			`DELETE FROM test_requests
+			WHERE receiver_id IN (SELECT id FROM test_receivers WHERE endpoint_id = ?)`,
+			id); err != nil {
+			return fmt.Errorf("store: delete endpoint: test requests: %w", err)
+		}
+		return nil
+	})
 }
 
 // scanner is satisfied by both *sql.Row and *sql.Rows.

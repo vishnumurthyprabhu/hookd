@@ -28,6 +28,10 @@ type dialect struct {
 	// progress with an expired lease, and marks it in progress. Its arguments
 	// are the new locked_until and the current time.
 	claimDelivery string
+	// lockRows is added to a SELECT to lock the rows it reads until the
+	// transaction ends. SQLite needs none: its transactions start as the one
+	// writer.
+	lockRows string
 	// numberedPlaceholders is true when placeholders are $1, $2, … rather
 	// than ?.
 	numberedPlaceholders bool
@@ -86,6 +90,7 @@ var postgresDialect = dialect{
 			FOR UPDATE SKIP LOCKED
 		)
 		RETURNING id, event_id, endpoint_id`,
+	lockRows:             " FOR UPDATE",
 	numberedPlaceholders: true,
 }
 

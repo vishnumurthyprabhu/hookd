@@ -66,8 +66,46 @@ type Store interface {
 	UpdateEndpoint(ctx context.Context, accountID, id string, u EndpointUpdate) (Endpoint, error)
 	// DeleteEndpoint soft-deletes one of the account's endpoints, with the
 	// same ErrNotFound rules as GetEndpoint. A deleted endpoint is never
-	// returned or changed again.
+	// returned or changed again. If it is a test endpoint, the requests its
+	// receiver got are deleted too.
 	DeleteEndpoint(ctx context.Context, accountID, id string) error
+
+	// CreateTestEndpoint creates, in one transaction, a built-in test
+	// receiver and the endpoint that delivers to it, with the URL
+	// <in.BaseURL>/admin/test-receiver/<receiver ID> and a new signing
+	// secret. The endpoint is an ordinary endpoint in every other way. It
+	// returns ErrNotFound if the account does not exist.
+	CreateTestEndpoint(ctx context.Context, accountID string, in NewTestEndpoint) (TestEndpoint, error)
+	// GetTestReceiver returns a test receiver by its ID alone, which is what
+	// the receiver's URL carries, with its endpoint and the endpoint's
+	// signing secret. The endpoint is returned even if it has been deleted;
+	// see TestReceiverDetail.EndpointDeleted. It returns ErrNotFound if
+	// there is no such receiver.
+	GetTestReceiver(ctx context.Context, id string) (TestReceiverDetail, error)
+	// ListTestReceivers returns the account's test receivers whose endpoint
+	// is not deleted, ordered by ID. It returns an empty slice if there are
+	// none.
+	ListTestReceivers(ctx context.Context, accountID string) ([]TestReceiver, error)
+	// SetTestReceiverStatus sets the HTTP status that the receiver of one of
+	// the account's test endpoints answers with. Status is checked by the
+	// caller. It returns ErrNotFound if the endpoint does not exist, belongs
+	// to another account, has been deleted or is not a test endpoint.
+	SetTestReceiverStatus(ctx context.Context, accountID, endpointID string, status int) error
+	// RecordTestRequest stores a request received by a test receiver and, in
+	// the same transaction, deletes that receiver's requests beyond the
+	// newest MaxTestRequests. The event type is taken from the receiver's
+	// account's event whose ID is in.WebhookID, and is empty if there is
+	// none. It returns ErrNotFound, storing nothing, if the receiver does
+	// not exist or its endpoint has been deleted.
+	RecordTestRequest(ctx context.Context, receiverID string, in NewTestRequest) (TestRequest, error)
+	// ListTestRequests returns up to limit of the requests received by one of
+	// the account's test endpoints, newest first, with the same ErrNotFound
+	// rules as SetTestReceiverStatus. limit must be positive.
+	ListTestRequests(ctx context.Context, accountID, endpointID string, limit int) ([]TestRequest, error)
+	// ClearTestRequests deletes the requests received by one of the
+	// account's test endpoints, with the same ErrNotFound rules as
+	// SetTestReceiverStatus.
+	ClearTestRequests(ctx context.Context, accountID, endpointID string) error
 
 	// CreateEvent stores an event for an account and, in the same
 	// transaction, one pending delivery for each of the account's enabled,
@@ -159,6 +197,87 @@ type NewEndpoint struct {
 	URL         string
 	Description string
 	EventTypes  []string
+}
+
+// MaxTestRequests is the number of requests kept for each test receiver.
+const MaxTestRequests = 100
+
+// DefaultTestResponseStatus is the status a new test receiver answers with
+// when NewTestEndpoint.ResponseStatus is 0.
+const DefaultTestResponseStatus = 200
+
+// NewTestEndpoint holds the fields of a test endpoint to create. Input is
+// checked by the caller before it reaches the store.
+type NewTestEndpoint struct {
+	Description string
+	EventTypes  []string
+	// ResponseStatus is the HTTP status the receiver answers with. 0 means
+	// DefaultTestResponseStatus.
+	ResponseStatus int
+	// BaseURL is where the workers reach Hookd's admin routes, such as
+	// http://127.0.0.1:8080 (config.Config.ReceiverBaseURL).
+	BaseURL string
+}
+
+// TestEndpoint is what CreateTestEndpoint made.
+type TestEndpoint struct {
+	Endpoint Endpoint
+	// Secret is the endpoint's signing secret.
+	Secret   string
+	Receiver TestReceiver
+}
+
+// TestReceiver is Hookd's built-in receiver behind a test endpoint.
+type TestReceiver struct {
+	ID         string
+	AccountID  string
+	EndpointID string
+	// ResponseStatus is the HTTP status it answers with.
+	ResponseStatus int
+	CreatedAt      time.Time
+}
+
+// TestReceiverDetail is what the receiver needs to handle a request.
+type TestReceiverDetail struct {
+	Receiver TestReceiver
+	// Endpoint is the test endpoint, even if it is deleted.
+	Endpoint Endpoint
+	// Secret is the endpoint's signing secret.
+	Secret string
+	// EndpointDeleted is true if the endpoint has been deleted.
+	EndpointDeleted bool
+}
+
+// NewTestRequest holds a request received by a test receiver. Text that is
+// not valid UTF-8, and NUL bytes, are stored as U+FFFD.
+type NewTestRequest struct {
+	// WebhookID is the request's webhook-id header, or empty.
+	WebhookID string
+	Headers   map[string][]string
+	Body      []byte
+	// Verified is true if the signature checked out.
+	Verified bool
+	// VerifyError says why it did not, or is empty.
+	VerifyError string
+	// ResponseStatus is the HTTP status the receiver answered with.
+	ResponseStatus int
+}
+
+// TestRequest is a request received by a test receiver.
+type TestRequest struct {
+	ID         string
+	ReceiverID string
+	ReceivedAt time.Time
+	WebhookID  string
+	// EventType is the type of the account's event whose ID is WebhookID,
+	// or empty if there is none.
+	EventType string
+	// Headers is never nil.
+	Headers        map[string][]string
+	Body           []byte
+	Verified       bool
+	VerifyError    string
+	ResponseStatus int
 }
 
 // NewEvent holds the fields of an event to create. Input is checked by the

@@ -12,11 +12,13 @@ import (
 
 // Type prefixes for IDs. The ULID that follows sorts by creation time.
 const (
-	PrefixAccount  = "acct_"
-	PrefixEndpoint = "ep_"
-	PrefixMessage  = "msg_"
-	PrefixDelivery = "dlv_"
-	PrefixAPIKey   = "key_"
+	PrefixAccount      = "acct_"
+	PrefixEndpoint     = "ep_"
+	PrefixMessage      = "msg_"
+	PrefixDelivery     = "dlv_"
+	PrefixAPIKey       = "key_"
+	PrefixTestReceiver = "trcv_"
+	PrefixTestRequest  = "treq_"
 )
 
 const (
@@ -53,6 +55,13 @@ func NewDeliveryID() string { return New(PrefixDelivery) }
 
 // NewAPIKeyID returns a new API key record ID (key_…).
 func NewAPIKeyID() string { return New(PrefixAPIKey) }
+
+// NewTestReceiverID returns a new built-in test receiver ID (trcv_…).
+func NewTestReceiverID() string { return New(PrefixTestReceiver) }
+
+// NewTestRequestID returns a new ID (treq_…) for a request received by a
+// test receiver.
+func NewTestRequestID() string { return New(PrefixTestRequest) }
 
 // NewSecret returns a new endpoint signing secret: "whsec_" followed by the
 // standard base64 encoding of 24 random bytes.
