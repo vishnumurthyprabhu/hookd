@@ -72,12 +72,16 @@ Use three terminals, all in the repository folder.
      -d '{"event_type": "order.paid", "payload": {"type": "order.paid", "order_id": "1001", "amount": 4200}}'
    ```
 
-7. Fetch the event by its `msg_...` ID. The delivery now shows `"status":"succeeded"`:
+7. Fetch the event by its `msg_...` ID. The delivery now shows `"status":"succeeded"` with `"attempts":1`, and `/attempts` lists that attempt with its time, outcome, HTTP status and latency:
 
    ```bash
    curl -s http://localhost:8080/v1/events/msg_... \
      -H "Authorization: Bearer $HOOKD_API_KEY"
+   curl -s http://localhost:8080/v1/events/msg_.../attempts \
+     -H "Authorization: Bearer $HOOKD_API_KEY"
    ```
+
+8. To watch a retry, restart Hookd with a short schedule, `HOOKD_RETRY_SCHEDULE=5s,10s,20s go run ./cmd/hookd serve` (retry 5 s, 10 s and 20 s after each failure, so 4 attempts), and the test receiver with `--status 500`, then send an event without an idempotency key. The delivery stays `pending` with a `next_attempt_at` while each retry waits. Restart the receiver answering 200 before the next retry and the delivery ends `succeeded`; left at 500, it ends `failed` after the fourth attempt. `README.md` has this step by step, in the admin UI and with the API.
 
 To start again with an empty database, stop Hookd and delete `hookd.db`.
 
@@ -96,10 +100,11 @@ HOOKD_DB_DRIVER=postgres HOOKD_DB_PASSWORD=hookd go run ./cmd/hookd serve
 go test ./...                                # all tests, on SQLite
 go test -count=1 ./...                       # ignore cached results
 go test -v -run TestAcceptance ./cmd/hookd   # one test, with its output
+go test -v -run TestRetriesAcceptance ./cmd/hookd   # retries, history and retention end to end
 go vet ./...                                 # static checks
 ```
 
-The store suite can also run on PostgreSQL:
+Retries are tested with schedules of a few milliseconds and retention with a fake clock, so nothing waits for real minutes or days. The store suite, with all three migrations, the `SKIP LOCKED` claim, the attempt queries and the retention delete, can also run on PostgreSQL:
 
 ```bash
 HOOKD_TEST_PG=1 \
@@ -201,7 +206,11 @@ In production, one or more identical `hookd serve` processes run behind a load b
    2. Run `hookd migrate` once. From the version without the admin UI, it applies `0002_admin`. Since the new version serves the UI by default, set `HOOKD_ADMIN_UI=false` or restrict `/admin` before restarting.
    3. Restart the instances one at a time with `sudo systemctl restart hookd`, checking `/healthz` after each.
 
-9. **Back up** the PostgreSQL database, for example with `pg_dump`. It holds all of Hookd's state, signing secrets included, so protect the backups as secrets.
+   Upgrading to the version with retries (migration `0003_retries`, which adds the `attempts` table and the retry columns of `deliveries`) is not a rolling upgrade: once it is applied, instances of the earlier version answer `500` to `POST /v1/events`. Stop every instance (`sudo systemctl stop hookd`), run `hookd migrate` from one host (it prints `applied 0003_retries`; on a large `deliveries` table it takes a while and locks it), then start every instance and check `/healthz`. Existing data is kept: each finished delivery gets one attempt row from its recorded outcome. From then on failed deliveries are retried, and events older than 30 days are deleted from about a minute after the first instance starts, so set `HOOKD_RETENTION` first if you need to keep them longer.
+
+9. **Back up** the PostgreSQL database, for example with `pg_dump`. It holds all of Hookd's state, signing secrets and attempt history included, so protect the backups as secrets. Events older than `HOOKD_RETENTION` are deleted from the database and so from later backups; keep older backups if you need history beyond that. With retries on, each delivery stores up to 8 attempt rows, and the database holds about 30 days of traffic; size the disk for that.
+
+Waiting retries need nothing set up with several instances: each is a row in `deliveries` with its due time, claimed with `SKIP LOCKED` by whichever instance is free, and it survives restarts and deploys. Every instance runs the hourly retention deletion and they share the work. Set `HOOKD_RETENTION` to the same value on every instance.
 
 The full guide, with an nginx example, a `sslmode` table, and when to set `HOOKD_ADMIN_RECEIVER_URL` for the built-in test receiver, is in `docs/deployment.md`.
 
@@ -218,7 +227,7 @@ The stack doesn't set `HOOKD_ADMIN_UI`, and nginx forwards every path on 443, so
 
 ### Settings
 
-All settings are environment variables. Each one has a default that works locally, and the operator commands need the same `HOOKD_DB_*` values as `serve`. Seven of them (`HOOKD_WORKERS`, `HOOKD_POLL_INTERVAL`, `HOOKD_DELIVERY_TIMEOUT`, `HOOKD_DELIVERY_LEASE`, `HOOKD_MAX_PAYLOAD_BYTES`, `HOOKD_IDEMPOTENCY_WINDOW`, `HOOKD_LOG_LEVEL`) can also be changed on the admin UI's Settings page. A saved value is stored in the database, overrides the environment on every instance within 5 seconds without a restart, and is used only by `serve`. **Reset** goes back to the environment or default value.
+All settings are environment variables. Each one has a default that works locally, and the operator commands need the same `HOOKD_DB_*` values as `serve`. Eight of them (`HOOKD_WORKERS`, `HOOKD_POLL_INTERVAL`, `HOOKD_DELIVERY_TIMEOUT`, `HOOKD_DELIVERY_LEASE`, `HOOKD_MAX_PAYLOAD_BYTES`, `HOOKD_IDEMPOTENCY_WINDOW`, `HOOKD_LOG_LEVEL`, `HOOKD_RETRY_SCHEDULE`) can also be changed on the admin UI's Settings page. A saved value is stored in the database, overrides the environment on every instance within 5 seconds without a restart, and is used only by `serve`. **Reset** goes back to the environment or default value.
 
 | Variable | Default |
 |---|---|
@@ -238,10 +247,12 @@ All settings are environment variables. Each one has a default that works locall
 | `HOOKD_AUTO_MIGRATE` | `true` |
 | `HOOKD_LOG_LEVEL` (`debug`, `info`, `warn`, `error`) | `info` |
 | `HOOKD_LOG_FORMAT` (`text` or `json`) | `text` |
+| `HOOKD_RETRY_SCHEDULE` (waits before each retry, counted from the previous attempt, each varied by up to 10%; at most 20; `none` for no retries) | `5s,5m,30m,2h,5h,10h,10h` (8 attempts over about 27½ hours) |
+| `HOOKD_RETENTION` (how long events, with their deliveries and attempts, are kept; environment only; must be longer than `HOOKD_IDEMPOTENCY_WINDOW` and than the retry schedule's total plus 10%) | `720h` (30 days) |
 | `HOOKD_ADMIN_UI` (serve the admin UI and built-in test receiver under `/admin`) | `true` |
 | `HOOKD_ADMIN_RECEIVER_URL` (base URL the workers use to reach the built-in test receiver) | empty (`http://127.0.0.1:8080` by default) |
 
-If a setting is invalid, Hookd names it and exits without doing anything. `docs/configuration.md` describes each setting.
+If a setting is invalid, Hookd names it and exits without doing anything. The Settings page refuses a value that would make the configuration invalid, such as a retry schedule too long for `HOOKD_RETENTION`. `docs/configuration.md` describes each setting.
 
 ## How to use it
 
@@ -271,8 +282,9 @@ Open `http://<host>:8080/`, which leads to `/admin/`. Every page has a "No sign-
 - **Accounts:** create an account. Its first API key is shown once, with a **Copy** button. An account's page lists its keys and has **Create API key** and **Revoke**.
 - **Endpoints:** create, edit, disable, enable and delete endpoints. **Show the signing secret** shows the secret on request.
 - **New test endpoint:** creates an endpoint at `/admin/test-receiver/trcv_...`, the built-in receiver. It checks each request's signature and answers with the **Answer status** you set (for example `500` to see failures). Its page lists the last 100 **Received requests**, with headers and body.
-- **Events:** **Send an event** with an event type, a JSON payload and an optional idempotency key. The event's page shows each delivery's status and refreshes itself every 2 seconds until all are finished.
-- **Settings:** a Health section (database, migrations, pending and in-progress deliveries) and every `HOOKD_*` setting with its source (`default`, `environment` or `UI`). The seven editable ones have **Save** and **Reset**.
+- **Endpoint page:** **Recent attempts** lists every attempt made to the endpoint, newest first, with a link to each attempt's event and an **Outcome** filter (`failed` shows only the failures).
+- **Events:** **Send an event** with an event type, a JSON payload and an optional idempotency key. The event's page shows each delivery's status, attempt count and, while a retry waits, "next retry at …", and under **Attempts** each attempt with its number, start time, outcome, HTTP status, latency and error. It refreshes itself every 2 seconds while a delivery is being sent or a retry is due within 10 seconds, every 30 seconds while a retry waits further off, and stops once every delivery is finished.
+- **Settings:** a Health section (database, migrations, and deliveries pending, in progress and waiting for a retry) and every `HOOKD_*` setting with its source (`default`, `environment` or `UI`). The eight editable ones, `HOOKD_RETRY_SCHEDULE` included, have **Save** and **Reset**. `HOOKD_RETENTION` is read-only, because shortening it by mistake deletes data.
 
 ### API
 
@@ -287,7 +299,10 @@ Send `Authorization: Bearer hk_...` on every `/v1` route. An object that belongs
 | `DELETE /v1/endpoints/{id}` | Delete an endpoint (`204`). |
 | `GET /v1/endpoints/{id}/secret` | Get the signing secret. |
 | `POST /v1/events` | Send `event_type` and a JSON object `payload`, plus an optional `Idempotency-Key` header. Answers `202`, or `200` with `Idempotent-Replayed: true` for a key repeated within the window. |
-| `GET /v1/events/{id}` | Get the event and each delivery's `status`, `response_status` and `error`. |
+| `GET /v1/events/{id}` | Get the event and each delivery's `status`, `response_status`, `error`, `attempts` (count), `last_attempt_at` and `next_attempt_at` (while a retry waits, otherwise `null`). |
+| `GET /v1/events/{id}/attempts?endpoint_id=&limit=&after=` | List the event's attempts to all its endpoints, oldest first. `endpoint_id` keeps one endpoint's. To get the next page, pass the last `id` as `after`. |
+| `GET /v1/endpoints/{id}/attempts?outcome=&limit=&before=` | List the attempts made to an endpoint across all events, newest first, also for a deleted endpoint. `outcome` is `succeeded` or `failed`. To get the next page, pass the last `id` as `before`. |
+| `GET /v1/attempts/{id}` | Get one attempt. |
 | `GET /healthz` | Service and database check. Needs no key. |
 
 Rules:
@@ -295,8 +310,10 @@ Rules:
 - An empty `event_types` list subscribes the endpoint to every type.
 - Event types are 1 to 128 letters, digits, `.`, `_` or `-`.
 - Changes to an endpoint apply to events sent afterwards.
-- A pending delivery to an endpoint that has since been disabled or deleted fails with `endpoint_disabled`.
-- A delivery succeeds only on a 2xx answer within the timeout. A 3xx answer counts as a failure, because redirects aren't followed.
+- A delivery that hasn't been sent yet, or is waiting for a retry, when its endpoint is disabled or deleted fails with `endpoint_disabled` within moments. Enabling the endpoint again doesn't bring it back.
+- An attempt succeeds only on a 2xx answer within the timeout. Anything else is a failure and is retried, 4xx included; a 3xx answer counts as a failure, because redirects aren't followed. The first success makes the delivery `succeeded`; if the last attempt fails, it is `failed`. While a retry waits, the delivery is `pending` with a `next_attempt_at`.
+- An attempt has `id` (`att_...`), `event_id`, `endpoint_id`, `number` (1 for the first, 2 for the first retry), `started_at`, `outcome` (`succeeded` or `failed`), `response_status` (`null` if there was none), `latency_ms` and, on failure, `error`. The attempt lists are paged as `{"data": [...], "has_more": bool}`, `limit` 1 to 100, default 50.
+- Events are kept for 30 days (`HOOKD_RETENTION`), then deleted with their deliveries and attempts; after that the event and its attempt routes answer `404`.
 
 Errors look like `{"error":{"code":"...","message":"..."}}`. The codes are `invalid_json`, `invalid_request`, `invalid_url`, `invalid_event_type`, `invalid_payload`, `invalid_idempotency_key`, `unauthorized`, `not_found`, `method_not_allowed`, `payload_too_large`, `internal_error` and `unavailable`.
 
@@ -309,4 +326,4 @@ Each delivery is a `POST` of the payload bytes, exactly as they were sent. It ca
 - `webhook-timestamp`
 - `webhook-signature` (`v1,<base64 HMAC-SHA256>`)
 
-Verify each delivery against the raw body using any Standard Webhooks library and the endpoint's secret. Delivery is at least once: a delivery cut off by a crash is sent again with the same `webhook-id`, so drop repeats by that header. `docs/api.md` has complete receivers in Node.js (`npm install standardwebhooks`) and Go.
+Verify each delivery against the raw body using any Standard Webhooks library and the endpoint's secret. Delivery is at least once: a failed delivery is retried, and a delivery cut off by a crash is sent again, both with the same `webhook-id` and body, so drop repeats by that header. Each retry has a new `webhook-timestamp` and signature, so it passes the libraries' five-minute timestamp check however late it comes. Answering 2xx stops the retries. `docs/api.md` has complete receivers in Node.js (`npm install standardwebhooks`) and Go.
