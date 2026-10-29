@@ -40,6 +40,10 @@ http {
     listen 443 ssl default_server;
     ssl_certificate     /etc/nginx/tls/hookd.crt;
     ssl_certificate_key /etc/nginx/tls/hookd.key;
+    # The admin UI has no sign-in: never through nginx. Reach it on the box's loopback through a
+    # Session Manager port forward instead. / only redirects to /admin/.
+    location /admin { return 404; }
+    location = / { return 404; }
     location / {
       proxy_pass http://127.0.0.1:8080;
       proxy_set_header Host $host;
