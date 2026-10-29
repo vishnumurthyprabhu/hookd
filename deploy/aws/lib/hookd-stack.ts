@@ -19,6 +19,9 @@ function findRepoRoot(): string {
 }
 const repoRoot = findRepoRoot();
 
+// The only address allowed to reach the admin UI (/admin) through nginx: the admin's public IP.
+const adminCidr = '49.207.216.48/32';
+
 // nginx on the box: HTTPS on 443 with a self-signed certificate, proxied to hookd on 127.0.0.1:8080.
 // Port 80 answers only /healthz (for the health check) and redirects everything else to HTTPS.
 const nginxConf = `user nginx;
@@ -40,10 +43,23 @@ http {
     listen 443 ssl default_server;
     ssl_certificate     /etc/nginx/tls/hookd.crt;
     ssl_certificate_key /etc/nginx/tls/hookd.key;
-    # The admin UI has no sign-in: never through nginx. Reach it on the box's loopback through a
-    # Session Manager port forward instead. / only redirects to /admin/.
-    location /admin { return 404; }
-    location = / { return 404; }
+    # The admin UI has no sign-in: through nginx only from the admin's address, 403 for everyone else.
+    # It is also reachable on the box's loopback through a Session Manager port forward.
+    # / only redirects to /admin/.
+    location /admin {
+      allow ${adminCidr};
+      deny all;
+      proxy_pass http://127.0.0.1:8080;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_set_header X-Forwarded-Proto https;
+    }
+    location = / {
+      allow ${adminCidr};
+      deny all;
+      proxy_pass http://127.0.0.1:8080;
+      proxy_set_header Host $host;
+    }
     location / {
       proxy_pass http://127.0.0.1:8080;
       proxy_set_header Host $host;
