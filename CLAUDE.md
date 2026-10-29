@@ -60,17 +60,30 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
 ## Build & Test
 
-_Add your build and test commands here_
+Go 1.26 or later. No other setup: the SQLite driver is pure Go and tests need no running service.
 
 ```bash
-# Example:
-# npm install
-# npm test
+go build ./...                       # build everything
+go vet ./...                         # static checks
+go test ./...                        # all tests, on SQLite
+go run ./cmd/hookd serve             # run locally on :8080 with ./hookd.db
+go run ./cmd/hookd account create --name acme   # prints an API key
+go run ./cmd/testreceiver --secret whsec_...    # verifying receiver on 127.0.0.1:9000
 ```
+
+The store suite also runs on PostgreSQL with `HOOKD_TEST_PG=1` plus the `HOOKD_DB_*` settings; see `docs/testing.md`. Without it those subtests are skipped.
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+Hookd is one Go binary (`cmd/hookd`) that takes webhook events over a JSON HTTP API and delivers them, signed under the Standard Webhooks spec, to registered endpoints. The database is the only outside component and doubles as the delivery queue.
+
+- `internal/api`: routes on `http.ServeMux`, bearer API key auth (key hash → account; every query is scoped by account, other accounts' objects answer 404), JSON errors `{"error":{"code","message"}}`.
+- `internal/store`: one `Store` interface, one SQL implementation with a small dialect layer for SQLite (local) and PostgreSQL (production); embedded migrations per dialect. The `deliveries` table is the work queue: workers claim rows with a lease (`FOR UPDATE SKIP LOCKED` on PostgreSQL).
+- `internal/delivery`: worker pool woken by the API after each event and polling as a fallback; one attempt per delivery, 15 s timeout, no redirects, no retries (piece 1).
+- `internal/signing`: the Standard Webhooks signer. `internal/ids`: prefixed ULIDs, secrets, API keys. `internal/config`: every `HOOKD_*` setting and its default.
+- `cmd/testreceiver`: dev-only receiver that verifies with the official library.
+
+User docs: `README.md` (local setup), `docs/configuration.md`, `docs/deployment.md`, `docs/testing.md`, `docs/api.md`. Requirements and design for each change are under `docs/changes/`.
 
 ## Conventions & Patterns
 
